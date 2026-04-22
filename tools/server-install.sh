@@ -139,22 +139,13 @@ ensure_node() {
 # ------------------------------- install or update the api-server bundle --
 install_bundle() {
   mkdir -p "${INSTALL_DIR}"
-  if [ -n "${BUNDLE}" ]; then
-    [ -f "${BUNDLE}" ] || die "bundle not found: ${BUNDLE}"
-    log "Extracting bundle: ${BUNDLE}"
-    tar -xzf "${BUNDLE}" -C "${INSTALL_DIR}" --strip-components=0
-  elif [ -f "$(dirname "$0")/../artifacts/api-server/dist/index.mjs" ]; then
-    log "Copying pre-built api-server from repo (artifacts/api-server/dist)"
-    rsync -a --delete \
-      "$(dirname "$0")/../artifacts/api-server/dist/" \
-      "${INSTALL_DIR}/dist/"
-    cp "$(dirname "$0")/../artifacts/api-server/package.json" \
-       "${INSTALL_DIR}/package.json"
-  else
-    die "no bundle provided and no local build at artifacts/api-server/dist; \
-build first (\`pnpm --filter @workspace/api-server run build\`) or pass \
---bundle <file>.tar.gz"
-  fi
+  # Ship the tiny zero-dependency releases server. The full velour api-server
+  # in artifacts/ requires DATABASE_URL et al and is unrelated to the
+  # download surface, so we deliberately do NOT use it here.
+  local src="$(dirname "$0")/releases-server.mjs"
+  [ -f "$src" ] || die "missing tools/releases-server.mjs (re-pull the repo)"
+  log "Installing releases-server.mjs to ${INSTALL_DIR}/"
+  install -m 0644 "$src" "${INSTALL_DIR}/releases-server.mjs"
 
   # Persistent release artifacts live outside INSTALL_DIR so re-installs
   # don't blow them away.
@@ -165,7 +156,7 @@ build first (\`pnpm --filter @workspace/api-server run build\`) or pass \
 
 # ---------------------------------------- write the hardened systemd unit --
 install_systemd() {
-  local entry="${INSTALL_DIR}/dist/index.mjs"
+  local entry="${INSTALL_DIR}/releases-server.mjs"
   [ -f "${entry}" ] || die "missing entrypoint: ${entry}"
 
   log "Writing /etc/systemd/system/${SERVICE_NAME}.service"
