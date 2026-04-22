@@ -129,7 +129,12 @@ ${C_BOLD}HUNT OPTIONS${C_X}
   --limit N            cap candidate count
   --seed-only          only scan built-in carrier seeds (~80 hosts, fast)
   --no-throughput      skip the slow MB-pull stage
-  --interactive        per-host USSD balance probe (enables BUNDLE_REQUIRED).
+  --interactive        per-host USSD balance probe (enables BUNDLE_REQUIRED
+                         and PROMO_BUNDLE_<NAME>; the latter polls the
+                         promo-bundle USSD code returned by promo_bundle_for
+                         in addition to the main balance — Safaricom default
+                         *544*1# / Daily Social, Airtel *544*2#, Telkom
+                         *544*3#; override per-carrier with PROMO_USSD_*).
                          Forces concurrency=1. Best used on a curated short
                          list (e.g. --seed-only, or feed in passing hosts
                          from an earlier non-interactive run).
@@ -460,6 +465,21 @@ ussd_code_for() {
   esac
 }
 
+# Carrier-promo zero-rated bundle USSD codes. Returned as "<code>:<NAME>" so
+# the resulting PROMO_BUNDLE_<NAME> tier label tells the operator which promo
+# (e.g. Safaricom "Daily Social") is being drained — distinct from a host
+# that's truly UNLIMITED_FREE. Override per-carrier via env:
+#   PROMO_USSD_SAFARICOM, PROMO_USSD_AIRTEL, PROMO_USSD_TELKOM
+# Set the env var to "" to disable promo probing for that carrier.
+promo_bundle_for() {
+  case "$1" in
+    safaricom) echo "${PROMO_USSD_SAFARICOM-*544*1#:DAILY_SOCIAL}" ;;
+    airtel)    echo "${PROMO_USSD_AIRTEL-*544*2#:UNLIMINET}"        ;;
+    telkom)    echo "${PROMO_USSD_TELKOM-*544*3#:VIBE}"             ;;
+    *)         echo "" ;;
+  esac
+}
+
 # Pull a "<number> MB" / "<number> KB" / "<number> GB" balance figure from
 # arbitrary USSD-response text. Echoes KB on success, returns 1 on no match.
 parse_balance_to_kb() {
@@ -525,7 +545,9 @@ dial_ussd() {
 # Set TEST_ACCESSIBILITY_NODIAL=1 to skip the dial (used by self-test).
 read_balance_accessibility() {
   [ -n "$USSD_RESPONSE_FILE" ] && [ -r "$USSD_RESPONSE_FILE" ] || return 1
-  local code; code=$(ussd_code_for "$CARRIER")
+  # Optional positional override of the USSD code lets the promo-bundle path
+  # reuse this back-end (e.g. *544*1# instead of the carrier's main *544#).
+  local code; code="${1:-$(ussd_code_for "$CARRIER")}"
   local before after waited last
   before=$(wc -l < "$USSD_RESPONSE_FILE" 2>/dev/null || echo 0)
   if [ "${TEST_ACCESSIBILITY_NODIAL:-0}" != "1" ]; then
@@ -566,6 +588,27 @@ read_balance_kb() {
     termux-telephony-call "$code" >/dev/null 2>&1 || true
   fi
   printf "${C_Y}[BALANCE %s] dial %s on your phone, then enter remaining DATA in MB (or 'skip'): ${C_X}" "$who" "$code" >&2
+  read -r v < /dev/tty || { echo -1; return; }
+  case "$v" in skip|"") echo -1 ;; *) awk -v m="$v" 'BEGIN{printf "%d", m*1024}' ;; esac
+}
+
+# Same as read_balance_kb but queries the carrier's PROMO-BUNDLE USSD code
+# (e.g. Safaricom Daily Social *544*1#). Echoes remaining promo MB → KB on
+# success, or -1 if no promo code is configured for $CARRIER, or no back-end
+# can read it. The y/n prompt fallback is intentionally NOT used here: it
+# can't tell which bundle paid for the bytes.
+read_promo_balance_kb() {
+  local who="$1" entry code v
+  entry=$(promo_bundle_for "$CARRIER")
+  [ -z "$entry" ] && { echo -1; return; }
+  code="${entry%%:*}"
+  if v=$(read_balance_auto "$code");          then echo "$v"; return; fi
+  if v=$(read_balance_accessibility "$code");  then echo "$v"; return; fi
+  if [ "$INTERACTIVE" != "1" ]; then echo -1; return; fi
+  if [ "$HAVE_TERMUX_API" = "1" ]; then
+    termux-telephony-call "$code" >/dev/null 2>&1 || true
+  fi
+  printf "${C_Y}[PROMO %s] dial %s on your phone, then enter remaining promo bundle MB (or 'skip'): ${C_X}" "$who" "$code" >&2
   read -r v < /dev/tty || { echo -1; return; }
   case "$v" in skip|"") echo -1 ;; *) awk -v m="$v" 'BEGIN{printf "%d", m*1024}' ;; esac
 }
@@ -699,11 +742,24 @@ probe() {
   #   no back-end + TTY present → single y/n prompt with transfer size
   #   none of the above         → bal_delta=-1 (unknown)
   local bal_delta=-1 transfer_bytes=0 backend
+  # Promo-bundle delta is queried IN ADDITION to the main balance for back-ends
+  # that can dial a second USSD code (auto / accessibility / interactive). Any
+  # drain on the promo bundle while the main balance held flat is the signal
+  # for PROMO_BUNDLE_<NAME> — the host is "free" today but the bundle exhausts.
+  local promo_delta=-1 promo_name="" promo_entry promo_code
+  promo_entry=$(promo_bundle_for "$CARRIER")
+  [ -n "$promo_entry" ] && {
+    promo_code="${promo_entry%%:*}"
+    promo_name="${promo_entry##*:}"
+  }
   backend=$(select_balance_backend)
   if [ "$backend" != "none" ]; then
-    local bp=-1 ba=-1
+    local bp=-1 ba=-1 pp=-1 pa=-1
     case "$backend" in auto|accessibility|interactive)
-      bp=$(read_balance_kb "PRE  $sni"); [ -z "$bp" ] && bp=-1 ;;
+      bp=$(read_balance_kb "PRE  $sni"); [ -z "$bp" ] && bp=-1
+      if [ -n "$promo_code" ]; then
+        pp=$(read_promo_balance_kb "PRE  $sni"); [ -z "$pp" ] && pp=-1
+      fi ;;
     esac
     # Targeted transfer to attribute charge to THIS host. Capture actual bytes.
     if [ "${SKIP_THRU:-0}" != "1" ]; then
@@ -721,9 +777,18 @@ probe() {
         if [ "$bp" -ge 0 ] && [ "$ba" -ge 0 ]; then
           bal_delta=$(( bp - ba ))
           [ "$bal_delta" -lt 0 ] && bal_delta=0
+        fi
+        if [ -n "$promo_code" ]; then
+          pa=$(read_promo_balance_kb "POST $sni"); [ -z "$pa" ] && pa=-1
+          if [ "$pp" -ge 0 ] && [ "$pa" -ge 0 ]; then
+            promo_delta=$(( pp - pa ))
+            [ "$promo_delta" -lt 0 ] && promo_delta=0
+          fi
         fi ;;
       yn)
         # Graceful fallback: one-shot y/n prompt with the transfer size.
+        # Promo bundle is unknowable in this mode (the y/n can't differentiate
+        # which bucket got debited), so promo_delta stays -1.
         bal_delta=$(prompt_charge_yn "$sni" "$transfer_bytes")
         [ -z "$bal_delta" ] && bal_delta=-1 ;;
     esac
@@ -750,32 +815,38 @@ except Exception: print(0)' 2>/dev/null)
 
   # ---- stage 6: classification ----
   local tier
-  tier=$(classify_tier "$mbps" "$bal_delta" "$iplock" "$ntype" "$family")
+  tier=$(classify_tier "$mbps" "$bal_delta" "$iplock" "$ntype" "$family" \
+                       "$promo_delta" "$promo_name")
 
   # CSV schema: 1=tier 2=sni 3=rtt 4=jit 5=mbps 6=bal 7=iplock 8=ntype 9=family
-  # 10=ws_code 11=tunnel_ok 12=tunnel_bytes  (10..12 always present)
-  printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|101|%s|%s\n" \
+  # 10=ws_code 11=tunnel_ok 12=tunnel_bytes 13=promo_delta_kb 14=promo_name
+  printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|101|%s|%s|%s|%s\n" \
     "$tier" "$sni" "$rtt" "$jitter" "$mbps" "$bal_delta" "$iplock" "$ntype" \
-    "$family" "$tunnel_ok" "$tunnel_bytes"
+    "$family" "$tunnel_ok" "$tunnel_bytes" "$promo_delta" "$promo_name"
 }
 
 # Strict tier classifier — priority order is fixed.
 #   1) IP_LOCKED          (carrier-behavior signal, overrides speed)
-#   2) BUNDLE_REQUIRED    (balance dropped >0)
-#   3) THROTTLED          (mbps < 1)
-#   4) CAPPED_100M        (sustained ceiling near 100 Mbps  → 80–120)
-#   5) CAPPED_20M         (sustained ceiling near 20 Mbps   → 15–28)
-#   6) APP_TUNNEL_<F>     (only if family is META/WHATSAPP/YOUTUBE/TIKTOK and
+#   2) BUNDLE_REQUIRED    (main balance dropped >0)
+#   3) PROMO_BUNDLE_<N>   (main balance flat but promo bundle dropped >0;
+#                          host is "free" today but the bundle exhausts —
+#                          distinct from genuine UNLIMITED_FREE / APP_TUNNEL)
+#   4) THROTTLED          (mbps < 1)
+#   5) CAPPED_100M        (sustained ceiling near 100 Mbps  → 80–120)
+#   6) CAPPED_20M         (sustained ceiling near 20 Mbps   → 15–28)
+#   7) APP_TUNNEL_<F>     (only if family is META/WHATSAPP/YOUTUBE/TIKTOK and
 #                          we'd otherwise call it UNLIMITED_FREE)
-#   7) UNLIMITED_FREE     (≥10 Mbps, balance delta == 0)
-#   8) PASS_NOTHRU        (throughput skipped → can't decide further)
+#   8) UNLIMITED_FREE     (≥10 Mbps, balance delta == 0)
+#   9) PASS_NOTHRU        (throughput skipped → can't decide further)
 #   NETWORK_TYPE_SPECIFIC is assigned later by `merge-runs`, not here.
 classify_tier() {
   local mbps="$1" bal="$2" iplock="$3" net="$4" family="$5"
+  local promo_delta="${6:--1}" promo_name="${7:-}"
   if [ "$iplock" = "1" ]; then echo IP_LOCKED; return; fi
-  awk -v m="$mbps" -v b="$bal" -v f="$family" '
+  awk -v m="$mbps" -v b="$bal" -v f="$family" -v pd="$promo_delta" -v pn="$promo_name" '
     BEGIN {
       if (b+0 > 0)                                       { print "BUNDLE_REQUIRED"; exit }
+      if (pd+0 > 0 && pn != "")                          { print "PROMO_BUNDLE_" pn; exit }
       if (m+0 == -1)                                     { print "PASS_NOTHRU";    exit }
       if (m+0 < 1)                                       { print "THROTTLED";      exit }
       if (m+0 >= 80 && m+0 <= 120)                       { print "CAPPED_100M";    exit }
@@ -805,7 +876,7 @@ cmd_self_test() {
       printf "  ${C_R}FAIL${C_X}  %s  ->  %s (want %s)\n" "[$*]" "$got" "$exp"; fails=$((fails+1))
     fi
   }
-  # mbps bal iplock net family
+  # mbps bal iplock net family [promo_delta promo_name]
   check IP_LOCKED          "50"  "0"   "1"  "LTE"  "OTHER"
   check BUNDLE_REQUIRED    "30"  "200" "0"  "LTE"  "OTHER"
   check BUNDLE_REQUIRED    "0.5" "10"  "0"  "LTE"  "OTHER"
@@ -820,6 +891,65 @@ cmd_self_test() {
   check IP_LOCKED          "30"  "0"   "1"  "LTE"  "META"
   check BUNDLE_REQUIRED    "30"  "50"  "0"  "LTE"  "YOUTUBE"
   check PASS_NOTHRU        "-1"  "-1"  "0"  "LTE"  "OTHER"
+  # ---- PROMO_BUNDLE_<NAME> ----------------------------------------------
+  # main balance flat, but the promo-bundle USSD reports a drop → promo tier
+  check PROMO_BUNDLE_DAILY_SOCIAL "30" "0" "0" "LTE" "META" "100" "DAILY_SOCIAL"
+  check PROMO_BUNDLE_DAILY_SOCIAL "30" "0" "0" "LTE" "OTHER" "50" "DAILY_SOCIAL"
+  check PROMO_BUNDLE_UNLIMINET    "12" "0" "0" "LTE" "WHATSAPP" "8" "UNLIMINET"
+  # promo drain is a low-mbps host → still tagged as promo (operator must
+  # know the bundle is being drained even if speed is awful)
+  check PROMO_BUNDLE_VIBE         "0.4" "0" "0" "LTE" "OTHER" "5" "VIBE"
+  # main BUNDLE_REQUIRED still wins over PROMO_BUNDLE
+  check BUNDLE_REQUIRED           "30" "200" "0" "LTE" "META" "100" "DAILY_SOCIAL"
+  # IP_LOCKED still wins over PROMO_BUNDLE
+  check IP_LOCKED                 "30" "0"  "1" "LTE" "META" "100" "DAILY_SOCIAL"
+  # promo_delta=0 → no promo drain → fall through to UNLIMITED_FREE/APP_TUNNEL
+  check UNLIMITED_FREE            "60" "0"  "0" "LTE" "OTHER" "0" "DAILY_SOCIAL"
+  check APP_TUNNEL_META           "30" "0"  "0" "LTE" "META"  "0" "DAILY_SOCIAL"
+  # promo_delta>0 but no promo_name (carrier without a configured promo) →
+  # must NOT emit PROMO_BUNDLE_ with empty suffix; falls through normally.
+  check UNLIMITED_FREE            "30" "0"  "0" "LTE" "OTHER" "10" ""
+  # promo_delta=-1 (back-end couldn't read it) → ignored
+  check UNLIMITED_FREE            "30" "0"  "0" "LTE" "OTHER" "-1" "DAILY_SOCIAL"
+
+  # promo_bundle_for: defaults present for carriers, empty for unknown
+  echo
+  echo "${C_BOLD}promo_bundle_for${C_X}"
+  pbcheck() {
+    local exp_nonempty="$1" carrier="$2" got
+    got=$(promo_bundle_for "$carrier")
+    if [ "$exp_nonempty" = "1" ] && [ -n "$got" ] && [[ "$got" == *:* ]]; then
+      printf "  ${C_G}ok${C_X}    %-10s -> %s\n" "$carrier" "$got"
+    elif [ "$exp_nonempty" = "0" ] && [ -z "$got" ]; then
+      printf "  ${C_G}ok${C_X}    %-10s -> (empty)\n" "$carrier"
+    else
+      printf "  ${C_R}FAIL${C_X}  %-10s -> '%s' (want %s)\n" "$carrier" "$got" \
+        "$([ "$exp_nonempty" = 1 ] && echo nonempty || echo empty)"
+      fails=$((fails+1))
+    fi
+  }
+  pbcheck 1 safaricom
+  pbcheck 1 airtel
+  pbcheck 1 telkom
+  pbcheck 0 unknown
+  # env override is honored (PROMO_USSD_SAFARICOM="" must DISABLE the tier)
+  local _saved_ps="${PROMO_USSD_SAFARICOM-__UNSET__}"
+  PROMO_USSD_SAFARICOM=""
+  if [ -z "$(promo_bundle_for safaricom)" ]; then
+    printf "  ${C_G}ok${C_X}    PROMO_USSD_SAFARICOM='' disables promo for safaricom\n"
+  else
+    printf "  ${C_R}FAIL${C_X}  empty PROMO_USSD_SAFARICOM did not disable promo\n"
+    fails=$((fails+1))
+  fi
+  PROMO_USSD_SAFARICOM="*900*9#:CUSTOM"
+  if [ "$(promo_bundle_for safaricom)" = "*900*9#:CUSTOM" ]; then
+    printf "  ${C_G}ok${C_X}    PROMO_USSD_SAFARICOM override honored\n"
+  else
+    printf "  ${C_R}FAIL${C_X}  PROMO_USSD_SAFARICOM override ignored\n"
+    fails=$((fails+1))
+  fi
+  if [ "$_saved_ps" = "__UNSET__" ]; then unset PROMO_USSD_SAFARICOM
+  else PROMO_USSD_SAFARICOM="$_saved_ps"; fi
 
   # ---- tunnel-test framing constants — guard against silent breakage ----
   echo
@@ -1214,6 +1344,16 @@ ${C_BOLD}${C_C}═════════════════════�
         yn)            echo "PROMPT-CHARGE (one-shot y/n per host)" ;;
         none)          echo "off (use --interactive / --accessibility / --prompt-charge)" ;;
       esac)
+  Promo bundle   : $(
+      _pe=$(promo_bundle_for "$CARRIER")
+      if [ -n "$_pe" ] && [ "$(select_balance_backend)" != "none" ] \
+         && [ "$(select_balance_backend)" != "yn" ]; then
+        echo "${_pe%%:*} -> PROMO_BUNDLE_${_pe##*:}"
+      elif [ -n "$_pe" ]; then
+        echo "${_pe%%:*} (configured but back-end can't poll it; tier disabled)"
+      else
+        echo "off (no PROMO_USSD_* configured for ${CARRIER})"
+      fi)
   Output dir     : ${out_dir}
 ${C_BOLD}${C_C}═══════════════════════════════════════════════════════════════${C_X}
 EOF
@@ -1410,11 +1550,12 @@ format_outputs() {
     else if ($1=="CAPPED_100M")            p=2
     else if ($1=="CAPPED_20M")             p=3
     else if ($1 ~ /^APP_TUNNEL_/)          p=4
-    else if ($1=="NETWORK_TYPE_SPECIFIC")  p=5
-    else if ($1=="PASS_NOTHRU")            p=6
-    else if ($1=="BUNDLE_REQUIRED")        p=7
-    else if ($1=="IP_LOCKED")              p=8
-    else if ($1=="THROTTLED")              p=9
+    else if ($1 ~ /^PROMO_BUNDLE_/)        p=5
+    else if ($1=="NETWORK_TYPE_SPECIFIC")  p=6
+    else if ($1=="PASS_NOTHRU")            p=7
+    else if ($1=="BUNDLE_REQUIRED")        p=8
+    else if ($1=="IP_LOCKED")              p=9
+    else if ($1=="THROTTLED")              p=10
     print p"|"$0
   }' "$csv" | sort -t'|' -k1,1n -k6,6gr | cut -d'|' -f2- > "$sort_csv"
 
@@ -1849,7 +1990,9 @@ cmd_check() {
   # When probe ran, also collect cert subject and URL (used by both human and JSON paths)
   local cert_subj="" route_ip="$TARGET_IP"
   if [ -n "$rec" ]; then
-    IFS='|' read -r f_tier f_sni f_rtt f_jit f_mbps f_bal f_iplock f_net f_family _ f_tok f_tbytes <<<"$rec"
+    IFS='|' read -r f_tier f_sni f_rtt f_jit f_mbps f_bal f_iplock f_net f_family _ f_tok f_tbytes f_promo_kb f_promo_name <<<"$rec"
+    [ -z "$f_promo_kb"   ] && f_promo_kb=-1
+    [ -z "$f_promo_name" ] && f_promo_name=""
     [ "$f_iplock" = "1" ] && route_ip=$(resolve_host "$f_sni" 2>/dev/null) || true
     cert_subj=$(echo | timeout "$TIMEOUT" openssl s_client -connect "${TARGET_IP}:${PORT}" \
                   -servername "$f_sni" 2>/dev/null </dev/null \
@@ -1897,16 +2040,21 @@ PY
     case "$f_tier" in
       THROTTLED|BUNDLE_REQUIRED|IP_LOCKED) rec_action="RETIRE" ;;
       PASS_NOTHRU)                          rec_action="WATCH"  ;;
+      PROMO_BUNDLE_*)                       rec_action="WATCH"  ;;
     esac
     if [ "${VERIFY_TUNNEL:-0}" = "1" ]; then
       echo "$tunnel_json" | grep -q '"ssh"[^}]*"status": *"FAIL"' && rec_action="RETIRE"
     fi
     python3 - "$f_tier" "$f_sni" "$f_rtt" "$f_jit" "$f_mbps" "$f_bal" "$f_iplock" \
               "$f_net" "$f_family" "$cert_subj" "$url_probed" "$rec_action" \
-              "$tunnel_json" <<'PY'
+              "$tunnel_json" "$f_promo_kb" "$f_promo_name" <<'PY'
 import sys, json
 (tier, sni, rtt, jit, mbps, bal, iplock, net, family,
- cert, url, action, tunnel) = sys.argv[1:14]
+ cert, url, action, tunnel, promo_kb, promo_name) = sys.argv[1:16]
+# promo_delta_kb: -1 means "back-end couldn't read the promo bundle"
+# (no promo USSD configured for the carrier, or no auto/accessibility/
+# interactive back-end available). promo_name carries which bundle was
+# polled, so a JSON consumer can correlate PROMO_BUNDLE_<NAME> tiers.
 obj = {
   "schema_version": 2, "passed": True, "tier": tier, "sni": sni,
   "rtt_ms": int(rtt), "jitter_ms": int(jit), "mbps": float(mbps),
@@ -1914,6 +2062,8 @@ obj = {
   "net_type": net, "family": family,
   "cert_subject": cert or None, "url_probed": url,
   "recommended_action": action,
+  "promo_delta_kb": int(promo_kb) if promo_kb not in ("","-1") else None,
+  "promo_bundle":   promo_name or None,
   "tunnel": (json.loads(tunnel) if tunnel != "null" else None),
 }
 print(json.dumps(obj))
