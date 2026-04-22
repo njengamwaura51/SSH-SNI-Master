@@ -1,19 +1,72 @@
-import { useState } from "react";
-import { Copy, FileDown } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Copy, FileDown, RefreshCw } from "lucide-react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
 import { useStore } from "../store";
 import { tierMeta } from "../theme";
 import { fmtBytes, fmtKb, fmtMbps, fmtMs, fmtBool } from "../lib/format";
-import { generateOvpnSnippet } from "../lib/hunter";
+import { checkOne, generateOvpnSnippet, parseHostLine } from "../lib/hunter";
 
 export function DetailDrawer() {
-  const { hosts, selectedSni, config, pushLog } = useStore();
+  const {
+    hosts,
+    selectedSni,
+    config,
+    scanOptions,
+    deepChecks,
+    deepCheckPending,
+    setDeepCheck,
+    setDeepCheckPending,
+    pushLog,
+  } = useStore();
   const [snippet, setSnippet] = useState<string>("");
 
+  // Spec: "clicking a row runs sni-hunter.sh check <sni> --json
+  // --verify-tunnel". We do that lazily — once per row per session — and
+  // cache the deep result in `deepChecks`. Re-check is available via the
+  // refresh button.
+  useEffect(() => {
+    if (!selectedSni) return;
+    if (deepChecks.has(selectedSni) || deepCheckPending.has(selectedSni)) return;
+    void runDeepCheck(selectedSni);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSni]);
+
+  async function runDeepCheck(sni: string) {
+    setDeepCheckPending(sni, true);
+    pushLog({ ts: Date.now(), stream: "info", line: `deep-check ${sni}…` });
+    try {
+      const merged = { ...scanOptions, verifyTunnel: true };
+      const out = await checkOne(sni, merged, true);
+      const rec = parseHostLine(out.trim().split(/\r?\n/).pop() || "");
+      if (rec) {
+        setDeepCheck(sni, rec);
+      } else {
+        setDeepCheckPending(sni, false);
+        pushLog({
+          ts: Date.now(),
+          stream: "stderr",
+          line: `deep-check ${sni}: could not parse JSON output`,
+        });
+      }
+    } catch (e) {
+      setDeepCheckPending(sni, false);
+      pushLog({
+        ts: Date.now(),
+        stream: "stderr",
+        line: `deep-check ${sni} failed: ${String(e)}`,
+      });
+    }
+  }
+
   if (!selectedSni) return <Empty />;
-  const r = hosts.get(selectedSni);
-  if (!r) return <Empty />;
+  const baseRec = hosts.get(selectedSni);
+  if (!baseRec) return <Empty />;
+  // Prefer the deep-check record (richer fields) once it's back; otherwise
+  // fall back to the table row so the panel always shows something.
+  const deep = deepChecks.get(selectedSni);
+  const r = deep ?? baseRec;
+  const isPending = deepCheckPending.has(selectedSni);
   const c = tierMeta(r.tier);
 
   async function copy(text: string) {
@@ -87,7 +140,22 @@ export function DetailDrawer() {
         >
           <Copy size={14} />
         </button>
+        <button
+          className="btn-ghost"
+          title="Re-run check --json --verify-tunnel"
+          onClick={() => runDeepCheck(r.sni)}
+          disabled={isPending}
+          aria-label="Re-run deep check"
+        >
+          <RefreshCw size={14} className={isPending ? "animate-spin" : ""} />
+        </button>
       </header>
+
+      {isPending && !deep && (
+        <div className="text-xs text-on-surface-variant italic">
+          Running live check + tunnel verify…
+        </div>
+      )}
 
       <section className="grid grid-cols-2 gap-2">
         <Stat label="RTT" value={fmtMs(r.rtt_ms)} />

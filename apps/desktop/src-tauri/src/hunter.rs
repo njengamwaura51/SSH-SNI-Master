@@ -548,21 +548,71 @@ pub async fn start_scan(
     Ok(scan_id)
 }
 
+#[cfg(unix)]
+fn send_sigterm(pid: u32) -> bool {
+    // Negative PID targets the whole process group, which the bash hunter
+    // sets up via `set -m`. Falling back to single-pid kill if the group
+    // signal fails (process not a group leader).
+    unsafe {
+        let pid_i = pid as i32;
+        if libc::kill(-pid_i, libc::SIGTERM) == 0 {
+            return true;
+        }
+        libc::kill(pid_i, libc::SIGTERM) == 0
+    }
+}
+#[cfg(not(unix))]
+fn send_sigterm(_pid: u32) -> bool {
+    false
+}
+
 #[tauri::command]
 pub async fn cancel_scan(
     state: State<'_, Arc<Mutex<HunterState>>>,
     scan_id: String,
 ) -> Result<bool, String> {
-    let mut guard = state.lock().await;
-    if let Some(rc) = guard.running.remove(&scan_id) {
-        rc.stop.store(true, Ordering::Relaxed);
-        // tauri-plugin-shell only exposes hard kill on the CommandChild;
-        // the hunter's signal trap still runs because the OS delivers
-        // SIGKILL to the bash process group head.
-        rc.child.kill().map_err(|e| format!("kill: {e}"))?;
-        return Ok(true);
+    // Take a peek at the running entry without removing it: the
+    // CommandEvent::Terminated handler is the canonical owner of the
+    // remove() call, and we want our 4 s wait loop to actually wait for
+    // *it* to fire before deciding whether SIGKILL escalation is needed.
+    let (pid, stop) = {
+        let guard = state.lock().await;
+        match guard.running.get(&scan_id) {
+            Some(rc) => (rc.child.pid(), rc.stop.clone()),
+            None => return Ok(false),
+        }
+    };
+
+    // 1) Tell our internal pumps to stop and send a graceful SIGTERM to
+    //    the hunter's process group so its `trap` runs (flushes
+    //    results.csv, cleans temp dirs).
+    stop.store(true, Ordering::Relaxed);
+    let term_ok = send_sigterm(pid);
+
+    if term_ok {
+        // 2) Wait up to ~4 s for the Terminated handler to remove the
+        //    scan from `running`.
+        for _ in 0..40 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let g = state.lock().await;
+            if !g.running.contains_key(&scan_id) {
+                return Ok(true);
+            }
+        }
     }
-    Ok(false)
+
+    // 3) Either SIGTERM failed outright or the child ignored it for >4s.
+    //    Take the entry now so we own the CommandChild, then hard-kill.
+    //    The Terminated handler will still fire after kill() and find the
+    //    map empty — that's fine, remove() is a no-op in that case.
+    let rc = {
+        let mut guard = state.lock().await;
+        guard.running.remove(&scan_id)
+    };
+    if let Some(rc) = rc {
+        let _ = rc.child.kill();
+    }
+    Ok(true)
 }
 
 #[tauri::command]

@@ -26,3 +26,22 @@ echo
 echo "==> Built packages:"
 find src-tauri/target/release/bundle -maxdepth 3 \
   \( -name '*.AppImage' -o -name '*.deb' \) -print
+
+cat <<'EOF'
+
+==> Runtime requirements
+  .deb (Ubuntu/Debian):
+    Declares bash, python3 (>=3.8), openssl, curl, dnsutils as Depends —
+    apt resolves them automatically. The postinst symlinks the binary to
+    /usr/local/bin/sni-hunter-desktop.
+
+  AppImage:
+    Bundles the bash hunter script + V2Ray client snippets; the host must
+    provide bash, python3 (>=3.8), openssl and curl. On a stock Ubuntu
+    22.04+ desktop these are present by default. Bundling a static
+    python3 inside the AppImage is intentionally deferred (it more than
+    doubles the AppImage size and conflicts with system PEP-668 venvs).
+    To embed it anyway, drop a python-build-standalone tarball at
+    src-tauri/bin/python3-${triple}/ before running this script and Tauri
+    will include it automatically.
+EOF

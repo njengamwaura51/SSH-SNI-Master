@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { Toolbar } from "./components/Toolbar";
 import { ScanControls } from "./components/ScanControls";
 import { ResultsTable } from "./components/ResultsTable";
@@ -11,23 +11,29 @@ import { useStore, defaultScanOptions } from "./store";
 import {
   loadConfig,
   parseHostLine,
+  saveConfig,
   subscribeScanEvents,
 } from "./lib/hunter";
 
 export default function App() {
   const {
     setConfig,
+    config,
+    scanOptions,
     showLogs,
     showSettings,
     showTunnelTest,
     setShowSettings,
     setShowTunnelTest,
     setScanOptions,
+    setTheme,
+    isRunning,
     startedScan,
     endedScan,
     pushHost,
     pushLog,
   } = useStore();
+  const hydratedRef = useRef(false);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -35,6 +41,11 @@ export default function App() {
       try {
         const cfg = await loadConfig();
         setConfig(cfg);
+        // Apply persisted theme immediately so light-mode users don't see
+        // a flash of dark.
+        if (cfg.theme === "light" || cfg.theme === "dark") {
+          setTheme(cfg.theme);
+        }
         // Hydrate scan options from config defaults
         setScanOptions({
           ...defaultScanOptions,
@@ -59,6 +70,8 @@ export default function App() {
           vlessPath: cfg.vlessPath || undefined,
           hunterScriptOverride: cfg.hunterScriptOverride || undefined,
         });
+        // From now on, scan-form changes are auto-persisted (debounced).
+        hydratedRef.current = true;
       } catch (e) {
         pushLog({
           ts: Date.now(),
@@ -122,6 +135,42 @@ export default function App() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Auto-persist scan-form state to ~/.config/sni-hunter/config.json so the
+  // operator's last carrier/concurrency/toggles are remembered across
+  // launches (spec: "Form state persists between launches"). Debounced
+  // 600ms; pauses while a scan is running so we don't spam disk.
+  useEffect(() => {
+    if (!hydratedRef.current || !config || isRunning) return;
+    const id = setTimeout(() => {
+      const merged = {
+        ...config,
+        defaultCarrier: scanOptions.carrier,
+        defaultConcurrency: scanOptions.concurrency,
+        defaultCorpusPath: scanOptions.corpusPath || "",
+        defaultOutDir: scanOptions.outDir || "",
+        verifyTunnel: scanOptions.verifyTunnel,
+        twoPass: scanOptions.twoPass,
+        noThroughput: scanOptions.noThroughput,
+        promptCharge: scanOptions.promptCharge,
+        autoRenewPromo: scanOptions.autoRenewPromo,
+        accessibilityFile: scanOptions.accessibilityFile || "",
+        uuidVmess: scanOptions.uuidVmess || config.uuidVmess,
+        uuidVless: scanOptions.uuidVless || config.uuidVless,
+      };
+      saveConfig(merged)
+        .then(() => setConfig(merged))
+        .catch((e) =>
+          pushLog({
+            ts: Date.now(),
+            stream: "stderr",
+            line: `auto-save failed: ${String(e)}`,
+          })
+        );
+    }, 600);
+    return () => clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scanOptions, isRunning]);
 
   return (
     <div className="flex h-screen flex-col bg-surface text-on-surface">

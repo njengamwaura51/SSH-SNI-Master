@@ -220,6 +220,53 @@ export function ScanControls() {
         />
       </section>
 
+      <section className="pt-2 border-t border-outline-variant space-y-2">
+        <div className="label">Tunnel UUIDs (optional)</div>
+        <div>
+          <label
+            className="text-[11px] text-on-surface-variant block mb-1"
+            htmlFor="uuid-vmess-input"
+          >
+            VMess UUID
+          </label>
+          <input
+            id="uuid-vmess-input"
+            className="input font-mono text-xs"
+            placeholder="(use Settings default)"
+            value={scanOptions.uuidVmess || ""}
+            disabled={isRunning}
+            spellCheck={false}
+            autoComplete="off"
+            onChange={(e) =>
+              setScanOptions({ uuidVmess: e.target.value.trim() })
+            }
+          />
+        </div>
+        <div>
+          <label
+            className="text-[11px] text-on-surface-variant block mb-1"
+            htmlFor="uuid-vless-input"
+          >
+            VLESS UUID
+          </label>
+          <input
+            id="uuid-vless-input"
+            className="input font-mono text-xs"
+            placeholder="(use Settings default)"
+            value={scanOptions.uuidVless || ""}
+            disabled={isRunning}
+            spellCheck={false}
+            autoComplete="off"
+            onChange={(e) =>
+              setScanOptions({ uuidVless: e.target.value.trim() })
+            }
+          />
+        </div>
+        <p className="text-[10.5px] text-on-surface-variant leading-snug">
+          Override the per-scan UUIDs without touching defaults in Settings.
+        </p>
+      </section>
+
       <section className="pt-2 border-t border-outline-variant">
         <button
           className="btn w-full"

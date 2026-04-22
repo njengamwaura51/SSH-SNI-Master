@@ -1,12 +1,15 @@
 import {
   FolderOpen,
+  Moon,
   PlayCircle,
   Settings,
   StopCircle,
+  Sun,
   Terminal,
   TestTube,
 } from "lucide-react";
 import { useStore } from "../store";
+import { saveConfig } from "../lib/hunter";
 import {
   cancelScan,
   openResultsFolder,
@@ -24,7 +27,29 @@ export function Toolbar() {
     setShowSettings,
     setShowTunnelTest,
     pushLog,
+    theme,
+    setTheme,
+    config,
+    setConfig,
   } = useStore();
+
+  async function onToggleTheme() {
+    const next = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    if (config) {
+      const updated = { ...config, theme: next };
+      setConfig(updated);
+      try {
+        await saveConfig(updated);
+      } catch (e) {
+        pushLog({
+          ts: Date.now(),
+          stream: "stderr",
+          line: `theme persist failed: ${String(e)}`,
+        });
+      }
+    }
+  }
 
   async function onStart() {
     try {
@@ -138,6 +163,15 @@ export function Toolbar() {
         title="Open results folder"
       >
         <FolderOpen size={16} /> Runs
+      </button>
+
+      <button
+        className="btn-ghost"
+        onClick={onToggleTheme}
+        title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+        aria-label="Toggle theme"
+      >
+        {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
       </button>
 
       <button

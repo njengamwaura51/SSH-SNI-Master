@@ -29,6 +29,12 @@ once_cell = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# Used to send SIGTERM (graceful) to the bash hunter on cancel before
+# falling back to SIGKILL via tauri-plugin-shell's `kill()`. libc is in the
+# Rust ecosystem core and adds <50 KB to the binary.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]

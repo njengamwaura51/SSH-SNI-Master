@@ -7,10 +7,17 @@ export interface LogLine {
   line: string;
 }
 
+export type ThemeMode = "dark" | "light";
+
 export interface ScanState {
   // Persisted config
   config: AppConfig | null;
   setConfig: (c: AppConfig) => void;
+
+  // Theme — separate from config so the toggle is instant; the chosen
+  // value is mirrored back into config on next save.
+  theme: ThemeMode;
+  setTheme: (t: ThemeMode) => void;
 
   // Live scan state
   scanId: string | null;
@@ -23,6 +30,14 @@ export interface ScanState {
   // Results — keyed by SNI so re-probes update in place
   hosts: Map<string, HostRecord>;
   hostOrder: string[];
+
+  // Cache of `check <sni> --json --verify-tunnel` deep-probe results,
+  // keyed by SNI. Populated when the user opens the detail drawer for a
+  // row (one probe per row per session, unless explicitly re-run).
+  deepChecks: Map<string, HostRecord>;
+  deepCheckPending: Set<string>;
+  setDeepCheck: (sni: string, rec: HostRecord) => void;
+  setDeepCheckPending: (sni: string, pending: boolean) => void;
 
   // Logs (capped to 5000)
   logs: LogLine[];
@@ -69,6 +84,15 @@ export const useStore = create<ScanState>((set) => ({
   config: null,
   setConfig: (c) => set({ config: c }),
 
+  theme: "dark",
+  setTheme: (t) => {
+    set({ theme: t });
+    if (typeof document !== "undefined") {
+      document.documentElement.classList.toggle("light", t === "light");
+      document.documentElement.classList.toggle("dark", t === "dark");
+    }
+  },
+
   scanId: null,
   outDir: null,
   isRunning: false,
@@ -78,6 +102,24 @@ export const useStore = create<ScanState>((set) => ({
 
   hosts: new Map(),
   hostOrder: [],
+  deepChecks: new Map(),
+  deepCheckPending: new Set(),
+  setDeepCheck: (sni, rec) =>
+    set((s) => {
+      const dc = new Map(s.deepChecks);
+      dc.set(sni, rec);
+      const pend = new Set(s.deepCheckPending);
+      pend.delete(sni);
+      return { deepChecks: dc, deepCheckPending: pend };
+    }),
+  setDeepCheckPending: (sni, pending) =>
+    set((s) => {
+      const pend = new Set(s.deepCheckPending);
+      if (pending) pend.add(sni);
+      else pend.delete(sni);
+      return { deepCheckPending: pend };
+    }),
+
   logs: [],
 
   selectedSni: null,
@@ -107,6 +149,8 @@ export const useStore = create<ScanState>((set) => ({
       exitCode: null,
       hosts: new Map(),
       hostOrder: [],
+      deepChecks: new Map(),
+      deepCheckPending: new Set(),
       logs: [],
     }),
 
@@ -132,6 +176,8 @@ export const useStore = create<ScanState>((set) => ({
     set({
       hosts: new Map(),
       hostOrder: [],
+      deepChecks: new Map(),
+      deepCheckPending: new Set(),
       logs: [],
       selectedSni: null,
       exitCode: null,

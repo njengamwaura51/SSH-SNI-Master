@@ -2,7 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Material 3 dark theme tokens — matches the palette in task-19. */
+/* Material 3 dark theme tokens (default — matches palette in task-19). */
 :root,
 .dark {
   --md-surface: #121212;
@@ -24,6 +24,28 @@
   color-scheme: dark;
 }
 
+/* Material 3 light theme — applied when <html class="light">. The toggle
+ * lives in the title bar (Toolbar). Keep contrast close to WCAG-AA. */
+.light {
+  --md-surface: #fafafa;
+  --md-surface-2: #f1f1f3;
+  --md-surface-3: #e7e7eb;
+  --md-surface-4: #dcdce0;
+  --md-outline: #b9b9bf;
+  --md-outline-variant: #d6d6dc;
+  --md-on-surface: #1a1a1e;
+  --md-on-surface-variant: #44444c;
+  --md-primary: #6750a4;
+  --md-on-primary: #ffffff;
+  --md-secondary: #006a64;
+  --md-tertiary: #b3144d;
+  --md-success: #2e7d32;
+  --md-warning: #b26b00;
+  --md-error: #b3261e;
+  --md-promo: #b26b00;
+  color-scheme: light;
+}
+
 html,
 body,
 #root {
@@ -37,7 +59,6 @@ body {
   font-feature-settings: "cv11", "ss01", "ss03";
 }
 
-/* Smooth focus + scroll */
 *:focus-visible {
   outline: 2px solid var(--md-primary);
   outline-offset: 2px;
@@ -58,8 +79,13 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: #3a3a40;
 }
+.light ::-webkit-scrollbar-thumb {
+  background: #c5c5cc;
+}
+.light ::-webkit-scrollbar-thumb:hover {
+  background: #aeaeb6;
+}
 
-/* Subtle global motion */
 * {
   transition-property: background-color, border-color, color, fill, stroke,
     opacity, box-shadow;
