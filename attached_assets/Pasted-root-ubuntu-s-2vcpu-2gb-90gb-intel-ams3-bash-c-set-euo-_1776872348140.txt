@@ -1,0 +1,202 @@
+root@ubuntu-s-2vcpu-2gb-90gb-intel-ams3:~# bash -c '
+set -euo pipefail
+
+### 1. Fix ws-ssh service (remove -E flag)
+cat > /etc/systemd/system/ws-ssh.service <<EOF
+[Unit]
+Description=WebSocket -> SSH bridge (websocat)
+After=network.target
+[Service]
+ExecStart=/usr/local/bin/websocat --binary ws-l:127.0.0.1:8888 tcp:127.0.0.1:22
+Restart=always
+RestartSec=2
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl restart ws-ssh
+sleep 1
+systemctl is-active ws-ssh && echo "ws-ssh: active" || { echo "ws-ssh failed — journal:"; journalctl -u ws-ssh -n 20 --no-pager; exit 1; }
+
+### 2. Clean up the nginx snippet (drop the noisy if-guards)
+cat > /etc/nginx/snippets/tunnel-locations.conf <<EOF
+location = /ws-bridge-x9k2 {
+    proxy_pass http://127.0.0.1:8888;
+    proxy_http_version 1.1;
+    proxy_set_header Host \$host;
+    proxy_set_header Upgrade \$http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_buffering off;
+    proxy_request_buffering off;
+    proxy_read_timeout 7d;
+    proxy_send_timeout 7d;
+    tcp_nodelay on;
+}
+location = /vmess-x9k2 {
+    proxy_pass http://127.0.0.1:10000;
+    proxy_http_version 1.1;
+    proxy_set_header Host \$host;
+'cho | openssl s_client -connect 127.0.0.1:445 -servername shopthelook.page 2>/dev/null | grep -E "subject|Verify"
+activating
+ws-ssh failed — journal:
+Apr 22 15:33:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 websocat[6482]: websocat: Address in use (os error 98)
+Apr 22 15:33:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 websocat[6482]: websocat: error running
+Apr 22 15:33:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 systemd[1]: ws-ssh.service: Main process exited, code=exited, status=1/FAILURE
+Apr 22 15:33:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 systemd[1]: ws-ssh.service: Failed with result 'exit-code'.
+Apr 22 15:33:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 systemd[1]: ws-ssh.service: Scheduled restart job, restart counter is at 4.
+Apr 22 15:33:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 systemd[1]: Started ws-ssh.service - WebSocket -> SSH bridge.
+Apr 22 15:33:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 websocat[6520]: websocat: Address in use (os error 98)
+Apr 22 15:33:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 websocat[6520]: websocat: error running
+Apr 22 15:33:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 systemd[1]: ws-ssh.service: Main process exited, code=exited, status=1/FAILURE
+Apr 22 15:33:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 systemd[1]: ws-ssh.service: Failed with result 'exit-code'.
+Apr 22 15:33:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 systemd[1]: ws-ssh.service: Scheduled restart job, restart counter is at 5.
+Apr 22 15:33:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 systemd[1]: ws-ssh.service: Start request repeated too quickly.
+Apr 22 15:33:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 systemd[1]: ws-ssh.service: Failed with result 'exit-code'.
+Apr 22 15:33:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 systemd[1]: Failed to start ws-ssh.service - WebSocket -> SSH bridge.
+Apr 22 15:37:42 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 systemd[1]: Started ws-ssh.service - WebSocket -> SSH bridge (websocat).
+Apr 22 15:37:42 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 websocat[7110]: websocat: Unfortunately, serving multiple clients without --exit-on-eof (-E) or with -U option is prone to socket leak in this websocat version
+Apr 22 15:37:42 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 websocat[7110]: websocat: Address in use (os error 98)
+Apr 22 15:37:42 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 websocat[7110]: websocat: error running
+Apr 22 15:37:42 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 systemd[1]: ws-ssh.service: Main process exited, code=exited, status=1/FAILURE
+Apr 22 15:37:42 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 systemd[1]: ws-ssh.service: Failed with result 'exit-code'.
+root@ubuntu-s-2vcpu-2gb-90gb-intel-ams3:~# bash -c '
+echo "=== Listening ports ==="
+ss -ltnp | grep -E ":(22|80|143|443|445|8080|10000|10001) " | sort
+
+echo
+echo "=== Service status ==="
+for s in nginx ssh dropbear stunnel4 v2ray ws-ssh; do
+  printf "  %-12s : %s\n" "$s" "$(systemctl is-active $s 2>/dev/null)"
+done
+
+echo
+echo "=== Website still live ==="
+curl -sk -o /dev/null -w "shopthelook.page → HTTP %{http_code}\n" https://shopthelook.page/
+
+echo
+echo "=== WS bridge handshake (expect 101) ==="
+curl -sk -o /dev/null -D - --resolve shopthelook.page:443:127.0.0.1 \
+  -H "Upgrade: websocket" -H "Connection: Upgrade" \
+  -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" -H "Sec-WebSocket-Version: 13" \
+  https://shopthelook.page/ws-bridge-x9k2 | head -1
+
+echo "=== VMess WS handshake (expect 101) ==="
+curl -sk -o /dev/null -D - --resolve shopthelook.page:443:127.0.0.1 \
+  -H "Upgrade: websocket" -H "Connection: Upgrade" \
+  -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" -H "Sec-WebSocket-Version: 13" \
+  https://shopthelook.page/vmess-x9k2 | head -1
+
+echo "=== VLESS WS handshake (expect 101) ==="
+curl -sk -o /dev/null -D - --resolve shopthelook.page:443:127.0.0.1 \
+  -H "Upgrade: websocket" -H "Connection: Upgrade" \
+  -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" -H "Sec-WebSocket-Version: 13" \
+  https://shopthelook.page/vless-x9k2 | head -1
+
+echo
+echo "=== SSH-SSL (stunnel) handshake ==="
+echo | openssl s_client -connect 127.0.0.1:445 -servername shopthelook.page 2>/dev/null | grep -E "subject|Verify"
+'
+=== Listening ports ===
+LISTEN 0      4096            [::]:22            [::]:*    users:(("sshd",pid=5937,fd=4),("systemd",pid=1,fd=177))                       
+LISTEN 0      4096         0.0.0.0:22         0.0.0.0:*    users:(("sshd",pid=5937,fd=3),("systemd",pid=1,fd=175))                       
+LISTEN 0      4096         0.0.0.0:445        0.0.0.0:*    users:(("stunnel4",pid=6219,fd=9))                                            
+LISTEN 0      4096       127.0.0.1:10000      0.0.0.0:*    users:(("v2ray",pid=6378,fd=3))                                               
+LISTEN 0      4096       127.0.0.1:10001      0.0.0.0:*    users:(("v2ray",pid=6378,fd=6))                                               
+LISTEN 0      511                *:8080             *:*    users:(("node",pid=3736,fd=19))                                               
+LISTEN 0      511             [::]:443           [::]:*    users:(("nginx",pid=6403,fd=8),("nginx",pid=6402,fd=8),("nginx",pid=868,fd=8))
+LISTEN 0      511             [::]:80            [::]:*    users:(("nginx",pid=6403,fd=6),("nginx",pid=6402,fd=6),("nginx",pid=868,fd=6))
+LISTEN 0      511          0.0.0.0:443        0.0.0.0:*    users:(("nginx",pid=6403,fd=7),("nginx",pid=6402,fd=7),("nginx",pid=868,fd=7))
+LISTEN 0      511          0.0.0.0:80         0.0.0.0:*    users:(("nginx",pid=6403,fd=5),("nginx",pid=6402,fd=5),("nginx",pid=868,fd=5))
+
+=== Service status ===
+  nginx        : active
+  ssh          : active
+  dropbear     : active
+  stunnel4     : active
+  v2ray        : active
+  ws-ssh       : activating
+
+=== Website still live ===
+shopthelook.page → HTTP 200
+
+=== WS bridge handshake (expect 101) ===
+HTTP/2 400 
+=== VMess WS handshake (expect 101) ===
+HTTP/2 404 
+=== VLESS WS handshake (expect 101) ===
+HTTP/2 404 
+
+=== SSH-SSL (stunnel) handshake ===
+subject=CN = shopthelook.page
+Verify return code: 0 (ok)
+root@ubuntu-s-2vcpu-2gb-90gb-intel-ams3:~# bash -c '
+echo "=== Listening ports ==="
+ss -ltnp | grep -E ":(22|80|143|443|445|8080|10000|10001) " | sort
+
+echo
+echo "=== Service status ==="
+for s in nginx ssh dropbear stunnel4 v2ray ws-ssh; do
+  printf "  %-12s : %s\n" "$s" "$(systemctl is-active $s 2>/dev/null)"
+done
+
+echo
+echo "=== Website still live ==="
+curl -sk -o /dev/null -w "shopthelook.page → HTTP %{http_code}\n" https://shopthelook.page/
+
+echo
+echo "=== WS bridge handshake (expect 101) ==="
+curl -sk -o /dev/null -D - --resolve shopthelook.page:443:127.0.0.1 \
+  -H "Upgrade: websocket" -H "Connection: Upgrade" \
+  -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" -H "Sec-WebSocket-Version: 13" \
+  https://shopthelook.page/ws-bridge-x9k2 | head -1
+
+echo "=== VMess WS handshake (expect 101) ==="
+curl -sk -o /dev/null -D - --resolve shopthelook.page:443:127.0.0.1 \
+  -H "Upgrade: websocket" -H "Connection: Upgrade" \
+  -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" -H "Sec-WebSocket-Version: 13" \
+  https://shopthelook.page/vmess-x9k2 | head -1
+
+echo "=== VLESS WS handshake (expect 101) ==="
+curl -sk -o /dev/null -D - --resolve shopthelook.page:443:127.0.0.1 \
+  -H "Upgrade: websocket" -H "Connection: Upgrade" \
+  -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" -H "Sec-WebSocket-Version: 13" \
+  https://shopthelook.page/vless-x9k2 | head -1
+
+echo
+echo "=== SSH-SSL (stunnel) handshake ==="
+echo | openssl s_client -connect 127.0.0.1:445 -servername shopthelook.page 2>/dev/null | grep -E "subject|Verify"
+'
+=== Listening ports ===
+LISTEN 0      4096            [::]:22            [::]:*    users:(("sshd",pid=5937,fd=4),("systemd",pid=1,fd=177))                       
+LISTEN 0      4096         0.0.0.0:22         0.0.0.0:*    users:(("sshd",pid=5937,fd=3),("systemd",pid=1,fd=175))                       
+LISTEN 0      4096         0.0.0.0:445        0.0.0.0:*    users:(("stunnel4",pid=6219,fd=9))                                            
+LISTEN 0      4096       127.0.0.1:10000      0.0.0.0:*    users:(("v2ray",pid=6378,fd=3))                                               
+LISTEN 0      4096       127.0.0.1:10001      0.0.0.0:*    users:(("v2ray",pid=6378,fd=6))                                               
+LISTEN 0      511                *:8080             *:*    users:(("node",pid=3736,fd=19))                                               
+LISTEN 0      511             [::]:443           [::]:*    users:(("nginx",pid=6403,fd=8),("nginx",pid=6402,fd=8),("nginx",pid=868,fd=8))
+LISTEN 0      511             [::]:80            [::]:*    users:(("nginx",pid=6403,fd=6),("nginx",pid=6402,fd=6),("nginx",pid=868,fd=6))
+LISTEN 0      511          0.0.0.0:443        0.0.0.0:*    users:(("nginx",pid=6403,fd=7),("nginx",pid=6402,fd=7),("nginx",pid=868,fd=7))
+LISTEN 0      511          0.0.0.0:80         0.0.0.0:*    users:(("nginx",pid=6403,fd=5),("nginx",pid=6402,fd=5),("nginx",pid=868,fd=5))
+
+=== Service status ===
+  nginx        : active
+  ssh          : active
+  dropbear     : active
+  stunnel4     : active
+  v2ray        : active
+  ws-ssh       : activating
+
+=== Website still live ===
+shopthelook.page → HTTP 200
+
+=== WS bridge handshake (expect 101) ===
+HTTP/2 400 
+=== VMess WS handshake (expect 101) ===
+HTTP/2 404 
+=== VLESS WS handshake (expect 101) ===
+HTTP/2 404 
+
+=== SSH-SSL (stunnel) handshake ===
+subject=CN = shopthelook.page
+Verify return code: 0 (ok)
+root@ubuntu-s-2vcpu-2gb-90gb-intel-ams3:~# 
