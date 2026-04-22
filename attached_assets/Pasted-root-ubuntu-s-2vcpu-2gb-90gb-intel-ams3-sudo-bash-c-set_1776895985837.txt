@@ -1,0 +1,33 @@
+root@ubuntu-s-2vcpu-2gb-90gb-intel-ams3:~# sudo bash -c 'set -euo pipefail; \
+  apt-get update -qq && apt-get install -y -qq git curl ca-certificates; \
+  command -v node >/dev/null || { curl -fsSL https://deb.nodesource.com/setup_20.x | bash -; apt-get install -y -qq nodejs; }; \
+  if [ -d /opt/sni-hunter-src/.git ]; then git -C /opt/sni-hunter-src fetch --all --prune && git -C /opt/sni-hunter-src reset --hard origin/main; \
+  else git clone --depth 1 https://github.com/njengamwaura51/SSH-SNI-Master.git /opt/sni-hunter-src; fi; \
+  SITE=$(grep -rlE "server_name[[:space:]]+([^;]*[[:space:]])?shopthelook\.page([[:space:]]|;)" /etc/nginx/sites-enabled /etc/nginx/conf.d 2>/dev/null | head -n1); \
+  NGINX_SITE_OVERRIDE="$SITE" bash /opt/sni-hunter-src/tools/server-install.sh install --domain shopthelook.page; \
+  bash /opt/sni-hunter-src/tools/server-install.sh check'
+HEAD is now at 987b1dd Update installer to automatically detect nginx configuration and fix websocket probe
+root@ubuntu-s-2vcpu-2gb-90gb-intel-ams3:~# sudo bash -c 'set -euo pipefail; \
+  cd /opt/sni-hunter-src && git fetch --all --prune && git reset --hard origin/main; \
+  git log --oneline -3; \
+  test -f tools/releases-server.mjs && echo "✓ releases-server.mjs present" || { echo "✗ STILL MISSING — push didn'"'"'t go through"; exit 1; }; \
+  systemctl reset-failed sni-hunter-api 2>/dev/null || true; \
+  SITE=$(grep -rlE "server_name[[:space:]]+([^;]*[[:space:]])?shopthelook\.page([[:space:]]|;)" /etc/nginx/sites-enabled /etc/nginx/conf.d 2>/dev/null | head -n1); \
+  echo "Detected vhost: ${SITE:-<none>}"; \
+  NGINX_SITE_OVERRIDE="$SITE" bash tools/server-install.sh install --domain shopthelook.page; \
+  bash tools/server-install.sh check; \
+  echo; echo "--- /api/releases ---"; \
+  curl -sk https://shopthelook.page/sni-hunter/api/releases'
+remote: Enumerating objects: 13, done.
+remote: Counting objects: 100% (13/13), done.
+remote: Compressing objects: 100% (5/5), done.
+remote: Total 9 (delta 4), reused 9 (delta 4), pack-reused 0 (from 0)
+Unpacking objects: 100% (9/9), 4.55 KiB | 1.52 MiB/s, done.
+From https://github.com/njengamwaura51/SSH-SNI-Master
+   987b1dd..5c394f8  main       -> origin/main
+HEAD is now at 5c394f8 Update installation process to use a lightweight release server
+5c394f8 (HEAD -> main, origin/main, origin/HEAD) Update installation process to use a lightweight release server
+4748a43 Standalone releases-server.mjs (zero deps); installer no longer needs the velour api-server build
+987b1dd Update installer to automatically detect nginx configuration and fix websocket probe
+✓ releases-server.mjs present
+root@ubuntu-s-2vcpu-2gb-90gb-intel-ams3:~# 
