@@ -1,0 +1,105 @@
+ok    [50 0 1 LTE OTHER]  ->  IP_LOCKED
+  ok    [30 200 0 LTE OTHER]  ->  BUNDLE_REQUIRED
+  ok    [0.5 10 0 LTE OTHER]  ->  BUNDLE_REQUIRED
+  ok    [0.4 0 0 LTE OTHER]  ->  THROTTLED
+  ok    [95 0 0 LTE OTHER]  ->  CAPPED_100M
+  ok    [20 0 0 LTE OTHER]  ->  CAPPED_20M
+  ok    [60 0 0 LTE OTHER]  ->  UNLIMITED_FREE
+  ok    [11 0 0 LTE OTHER]  ->  UNLIMITED_FREE
+  ok    [30 0 0 LTE META]  ->  APP_TUNNEL_META
+  ok    [12 0 0 LTE WHATSAPP]  ->  APP_TUNNEL_WHATSAPP
+  ok    [30 0 1 LTE META]  ->  IP_LOCKED
+  ok    [30 50 0 LTE YOUTUBE]  ->  BUNDLE_REQUIRED
+  ok    [-1 -1 0 LTE OTHER]  ->  PASS_NOTHRU
+  ok    [30 0 0 LTE META 100 DAILY_SOCIAL]  ->  PROMO_BUNDLE_DAILY_SOCIAL
+  ok    [30 0 0 LTE OTHER 50 DAILY_SOCIAL]  ->  PROMO_BUNDLE_DAILY_SOCIAL
+  ok    [12 0 0 LTE WHATSAPP 8 UNLIMINET]  ->  PROMO_BUNDLE_UNLIMINET
+  ok    [0.4 0 0 LTE OTHER 5 VIBE]  ->  PROMO_BUNDLE_VIBE
+  ok    [30 200 0 LTE META 100 DAILY_SOCIAL]  ->  BUNDLE_REQUIRED
+  ok    [30 0 1 LTE META 100 DAILY_SOCIAL]  ->  IP_LOCKED
+  ok    [60 0 0 LTE OTHER 0 DAILY_SOCIAL]  ->  UNLIMITED_FREE
+  ok    [30 0 0 LTE META 0 DAILY_SOCIAL]  ->  APP_TUNNEL_META
+  ok    [30 0 0 LTE OTHER 10 ]  ->  UNLIMITED_FREE
+  ok    [30 0 0 LTE OTHER -1 DAILY_SOCIAL]  ->  UNLIMITED_FREE
+
+promo_bundle_for
+  ok    safaricom  -> *544*1#:DAILY_SOCIAL
+  ok    airtel     -> *544*2#:UNLIMINET
+  ok    telkom     -> *544*3#:VIBE
+  ok    unknown    -> (empty)
+  ok    PROMO_USSD_SAFARICOM='' disables promo for safaricom
+  ok    PROMO_USSD_SAFARICOM override honored
+
+promo_renew_for
+  ok    safaricom  -> ''
+  ok    airtel     -> ''
+  ok    telkom     -> ''
+  ok    unknown    -> ''
+  ok    safaricom  -> '*544*1*1#'
+
+promo-bundle exhaustion plumbing
+  ok    cmd_hunt parses --auto-renew-promo
+  ok    cmd_hunt sets PROMO_SENTINEL_FILE
+  ok    cmd_hunt exports PROMO_SENTINEL_FILE
+  ok    xargs wrapper checks sentinel before probe
+  ok    post-loop emits PROMO BUNDLE EXHAUSTED
+  ok    skipped hosts saved to promo-skipped.txt
+  ok    probe() handles exhaustion (sentinel + auto-renew)
+
+  tunnel-test framing constants:
+  ok    embedded python tunnel probe parses
+  ok    WS client frame size for 64B payload = 70
+  ok    SSH-2.0 banner regex matches
+  ok    hunt body calls cmd_tunnel_test 2× (pre + post)
+  ok    probe() emits tunnel_ok / tunnel_bytes fields
+  ok    VLESS header size for cloudflare default = 41B
+  ok    VMess auth_id=16B  prefix=50B
+  ok    VMess legacy auth magic string present
+  ok    path constant /ws-bridge-x9k2
+  ok    path constant /vmess-x9k2
+  ok    path constant /vless-x9k2
+  ok    path constant /blob-25M
+
+parse_balance_to_kb
+
+radio toggle helpers
+  ok    radio_mode_to_int 3g                     -> 2
+  ok    radio_mode_to_int 4g                     -> 11
+  ok    radio_mode_to_int LTE                    -> 11
+  ok    radio_mode_to_int UMTS                   -> 2
+  ok    radio_mode_to_int auto                   -> 9
+  ok    opposite_radio LTE -> 3g                 -> 3g
+  ok    opposite_radio UMTS -> 4g                -> 4g
+  ok    opposite_radio HSPA -> 4g                -> 4g
+  ok    opposite_radio unknown -> 3g (default)   -> 3g
+  ok    expected_type 4g matches 'LTE'
+  ok    expected_type 3g matches 'HSPAP'
+  ok    cmd_hunt dispatches --two-pass to orchestrator
+  ok    format_outputs emits per-radio breakdown
+  ok    results.txt contains per-radio breakdown (LTE + UMTS)
+
+parse_balance_to_kb
+  ok    [Your data balance is 245.50 MB valid till tomorrow]  ->  251392
+  ok    [<node text="Bundle: 1.5 GB remaining"/>]  ->  1572864
+  ok    [150 KB left]  ->  150
+  ok    [no balance here]  ->  ERR
+  ok    [0.0 MB]  ->  ERR
+
+select_balance_backend
+  ok    AUTO_USSD=1 wins                                   -> auto
+  ok    USSD_RESPONSE_FILE set                             -> accessibility
+  ok    INTERACTIVE=1, no auto                             -> interactive
+  ok    PROMPT_CHARGE=1, no other backend                  -> yn
+  ok    default: nothing set (non-interactive)             -> none
+  ok    TTY present but no opt-in flag → none            -> none
+  ok    auto wins over interactive + prompt                -> auto
+  ok    accessibility wins over prompt                     -> accessibility
+  ok    interactive wins over prompt                       -> interactive
+
+read_balance_accessibility (pre/post sequencing)
+  ok    stale file (no new line) -> read fails as required
+  ok    fresh line appended      -> 43008 KB
+
+all tests passed
+
+Press Enter to return to menu.     
