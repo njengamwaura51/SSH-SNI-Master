@@ -222,7 +222,7 @@ install_nginx_snippet() {
   # grepping for \`server_name <domain>\` across sites-enabled and conf.d.
   if [ ! -f "${NGINX_SITE}" ]; then
     local found
-    found="$(grep -rlE "server_name[[:space:]]+([^;]*[[:space:]])?${DOMAIN//./\\.}([[:space:]]|;)" /etc/nginx/sites-enabled /etc/nginx/conf.d 2>/dev/null | head -n1 || true)"
+    found="$(grep -RlE "server_name[[:space:]]+([^;]*[[:space:]])?${DOMAIN//./\\.}([[:space:]]|;)" /etc/nginx/sites-enabled /etc/nginx/conf.d 2>/dev/null | head -n1 || true)"
     if [ -n "${found}" ]; then
       log "Auto-detected nginx vhost for ${DOMAIN}: ${found}"
       NGINX_SITE="${found}"
