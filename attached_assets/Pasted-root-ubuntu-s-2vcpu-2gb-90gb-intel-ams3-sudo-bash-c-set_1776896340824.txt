@@ -1,0 +1,133 @@
+root@ubuntu-s-2vcpu-2gb-90gb-intel-ams3:~# sudo bash -c 'set -euo pipefail; \
+  echo "=== 1. service health ==="; \
+  systemctl is-active sni-hunter-api && echo "  ✓ sni-hunter-api active"; \
+  curl -fsS http://127.0.0.1:8090/healthz && echo; \
+  echo; echo "=== 2. nginx routes ==="; \
+  curl -sk -o /dev/null -w "  /sni-hunter/api/releases       → HTTP %{http_code}\n" https://shopthelook.page/sni-hunter/api/releases; \
+  curl -sk -o /dev/null -w "  /sni-hunter/api/releases/latest → HTTP %{http_code}\n" https://shopthelook.page/sni-hunter/api/releases/latest; \
+  echo; echo "=== 3. publish a synthetic test release ==="; \
+  TMP=$(mktemp -d); \
+  TEST_FILE="$TMP/SNIHunter-0.0.1-smoketest.AppImage"; \
+  head -c 1048576 /dev/urandom > "$TEST_FILE"; \
+  bash /opt/sni-hunter-src/tools/server-install.sh add-release "$TEST_FILE"; \
+  echo; echo "=== 4. fetch manifest ==="; \
+  curl -sk https://shopthelook.page/sni-hunter/api/releases/latest | tee /tmp/latest.json; echo; \
+  URL=$(grep -oE "\"url\":\"[^\"]+\"" /tmp/latest.json | head -n1 | sed "s/\"url\":\"//; s/\"$//"); \
+  EXPECTED=$(grep -oE "\"sha256\":\"[a-f0-9]+\"" /tmp/latest.json | head -n1 | sed "s/\"sha256\":\"//; s/\"$//"); \
+  echo; echo "=== 5. download via public URL: $URL ==="; \
+  curl -sk -o "$TMP/round-trip.bin" -w "  HTTP %{http_code}, %{size_download} bytes, %{time_total}s\n" "$URL"; \
+  ACTUAL=$(sha256sum "$TMP/round-trip.bin" | awk "{print \$1}"); \
+  if [ "$ACTUAL" = "$EXPECTED" ]; then echo "  ✓ sha256 matches manifest ($ACTUAL)"; else echo "  ✘ MISMATCH expected=$EXPECTED actual=$ACTUAL"; exit 1; fi; \
+  echo; echo "=== 6. cleanup smoke-test release ==="; \
+  rm -f /var/www/sni-hunter/releases/SNIHunter-0.0.1-smoketest.AppImage /var/www/sni-hunter/releases/SNIHunter-0.0.1-smoketest.AppImage.sha256; \
+  rm -rf "$TMP"; \
+  echo; echo "=== 7. final manifest (should be empty until you upload a real build) ==="; \
+  curl -sk https://shopthelook.page/sni-hunter/api/releases | sed "s/^/  /"; echo; \
+  echo; echo "=== 8. tunnel stack still intact ==="; \
+  for s in nginx ssh dropbear stunnel4 v2ray ws-ssh; do \
+    printf "  %-10s : %s\n" "$s" "$(systemctl is-active $s)"; \
+  done; \
+  echo; echo "✓ ALL CHECKS PASSED — droplet is ready to receive real release builds."'
+=== 1. service health ===
+inactive
+curl: (7) Failed to connect to 127.0.0.1 port 8090 after 0 ms: Couldn't connect to server
+
+=== 2. nginx routes ===
+  /sni-hunter/api/releases       → HTTP 200
+  /sni-hunter/api/releases/latest → HTTP 200
+
+=== 3. publish a synthetic test release ===
+  ➜ Installing release: SNIHunter-0.0.1-smoketest.AppImage
+
+=== Latest manifest ===
+  <!DOCTYPE html>
+  <html lang="en" class="light">
+    <head>
+      <meta charset="UTF-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1" />
+      <title>VELOUR | Modern Editorial Fashion</title>
+      <meta name="description" content="VELOUR — modern editorial fashion with an after-dark edge. New season drops, exclusive collections, and trending pieces." />
+      <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+      <meta property="og:title" content="VELOUR | Modern Editorial Fashion" />
+      <meta property="og:description" content="New season drops, exclusive collections, and trending pieces — dress for the version of yourself you want to become." />
+      <meta property="og:type" content="website" />
+      <meta property="og:image" content="/opengraph.png" />
+      <meta name="twitter:card" content="summary_large_image" />
+      <meta name="twitter:title" content="VELOUR | Modern Editorial Fashion" />
+      <meta name="twitter:description" content="New season drops, exclusive collections, and trending pieces." />
+      <meta name="twitter:image" content="/opengraph.png" />
+      <meta name="theme-color" content="#5A4BFF" />
+      <link rel="preconnect" href="https://fonts.googleapis.com">
+      <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+      <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700;9..144,800;9..144,900&display=swap" rel="stylesheet">
+      <script>
+        // Apply the saved theme before first paint to avoid a flash.
+        // Light is the default for new visitors; an explicit saved choice wins.
+        (function () {
+          try {
+            var saved = localStorage.getItem('velour-theme');
+            var theme = saved === 'dark' || saved === 'light' ? saved : 'light';
+            var root = document.documentElement;
+            root.classList.remove('dark', 'light');
+            root.classList.add(theme);
+            root.dataset.theme = theme;
+          } catch (e) {
+            /* localStorage unavailable; default light class on <html> stands. */
+          }
+        })();
+      </script>
+      <script type="module" crossorigin src="/assets/index-CqZF7-mi.js"></script>
+      <link rel="stylesheet" crossorigin href="/assets/index-j6MlsfA1.css">
+    </head>
+    <body>
+      <div id="root"></div>
+    </body>
+  </html>
+
+
+=== 4. fetch manifest ===
+<!DOCTYPE html>
+<html lang="en" class="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1" />
+    <title>VELOUR | Modern Editorial Fashion</title>
+    <meta name="description" content="VELOUR — modern editorial fashion with an after-dark edge. New season drops, exclusive collections, and trending pieces." />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta property="og:title" content="VELOUR | Modern Editorial Fashion" />
+    <meta property="og:description" content="New season drops, exclusive collections, and trending pieces — dress for the version of yourself you want to become." />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="/opengraph.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="VELOUR | Modern Editorial Fashion" />
+    <meta name="twitter:description" content="New season drops, exclusive collections, and trending pieces." />
+    <meta name="twitter:image" content="/opengraph.png" />
+    <meta name="theme-color" content="#5A4BFF" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700;9..144,800;9..144,900&display=swap" rel="stylesheet">
+    <script>
+      // Apply the saved theme before first paint to avoid a flash.
+      // Light is the default for new visitors; an explicit saved choice wins.
+      (function () {
+        try {
+          var saved = localStorage.getItem('velour-theme');
+          var theme = saved === 'dark' || saved === 'light' ? saved : 'light';
+          var root = document.documentElement;
+          root.classList.remove('dark', 'light');
+          root.classList.add(theme);
+          root.dataset.theme = theme;
+        } catch (e) {
+          /* localStorage unavailable; default light class on <html> stands. */
+        }
+      })();
+    </script>
+    <script type="module" crossorigin src="/assets/index-CqZF7-mi.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-j6MlsfA1.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
+
+root@ubuntu-s-2vcpu-2gb-90gb-intel-ams3:~# 
