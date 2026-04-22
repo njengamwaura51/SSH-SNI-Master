@@ -138,6 +138,9 @@ ensure_node() {
 
 # ------------------------------- install or update the api-server bundle --
 install_bundle() {
+  # Wipe any stale install dir from previous attempts so old dist/ files
+  # cannot be picked up by an out-of-date systemd unit.
+  rm -rf "${INSTALL_DIR}"
   mkdir -p "${INSTALL_DIR}"
   # Ship the tiny zero-dependency releases server. The full velour api-server
   # in artifacts/ requires DATABASE_URL et al and is unrelated to the
@@ -193,7 +196,6 @@ ProtectControlGroups=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 RestrictNamespaces=yes
 LockPersonality=yes
-MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 CapabilityBoundingSet=
 AmbientCapabilities=
@@ -203,6 +205,8 @@ WantedBy=multi-user.target
 EOF
 
   systemctl daemon-reload
+  systemctl stop "${SERVICE_NAME}" 2>/dev/null || true
+  systemctl reset-failed "${SERVICE_NAME}" 2>/dev/null || true
   systemctl enable --now "${SERVICE_NAME}"
   sleep 1
   is_active "${SERVICE_NAME}" \
