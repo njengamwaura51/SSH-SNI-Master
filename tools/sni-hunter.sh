@@ -38,6 +38,7 @@ OUT_DIR_DEFAULT="${HOME}/sni-hunter-results"
 TARGET_IP=""
 CARRIER=""
 INTERACTIVE=0
+PROMPT_CHARGE=0
 RADIO_TAG=""
 
 # UI colors
@@ -68,6 +69,25 @@ UUID_VLESS="${UUID_VLESS:-}"
 VERIFY_TUNNEL=0
 VMESS_PATH="${VMESS_PATH:-/vmess-x9k2}"
 VLESS_PATH="${VLESS_PATH:-/vless-x9k2}"
+
+# -------- root / accessibility detection (for auto-USSD balance probe) -------
+HAVE_ROOT=0
+if command -v su >/dev/null 2>&1 && su -c id </dev/null 2>/dev/null | grep -q 'uid=0'; then
+  HAVE_ROOT=1
+fi
+HAVE_UIAUTOMATOR=0
+if [ "$HAVE_ROOT" = "1" ] && su -c 'command -v uiautomator' </dev/null >/dev/null 2>&1; then
+  HAVE_UIAUTOMATOR=1
+fi
+# Auto-USSD requires Termux + root + uiautomator. Disable with --no-auto-ussd.
+AUTO_USSD=0
+if [ "$IS_TERMUX" = "1" ] && [ "$HAVE_ROOT" = "1" ] && [ "$HAVE_UIAUTOMATOR" = "1" ]; then
+  AUTO_USSD=1
+fi
+# Set by --accessibility flag: balance read by an accessibility service that
+# writes the most recent USSD response text to this file (one number per line,
+# in MB). The script just `tail -n1`s the file pre/post each transfer.
+USSD_RESPONSE_FILE="${USSD_RESPONSE_FILE:-}"
 
 # -------- portable hostname → IP resolver (Termux ships without getent) ------
 resolve_host() {
@@ -113,6 +133,18 @@ ${C_BOLD}HUNT OPTIONS${C_X}
                          Forces concurrency=1. Best used on a curated short
                          list (e.g. --seed-only, or feed in passing hosts
                          from an earlier non-interactive run).
+                         When AUTO_USSD or --accessibility is available, the
+                         balance is read automatically (no prompts). With
+                         --interactive the user is prompted for MB pre/post.
+  --prompt-charge      opt-in graceful fallback: when no auto/accessibility
+                         back-end is available, prompt ONCE per host with
+                         the transferred MB and accept y/n. Forces
+                         concurrency=1. Use only on a curated short list.
+  --no-auto-ussd       disable root + uiautomator auto-balance back-end even
+                         if available (forces prompt fallback if requested)
+  --accessibility F    path to a file maintained by an Android accessibility
+                         service: dial_ussd is invoked, then we wait for a
+                         fresh line to be appended and read it
   --radio-tag NAME     label this run's radio type (LTE, UMTS, NR, ...)
   --verify-tunnel      after a host passes, also confirm payload bytes actually
                          move through ssh-ws / vmess / vless endpoints
@@ -296,10 +328,14 @@ network_type_now() {
 }
 
 # =============================================================================
-#  USSD BALANCE PROBE
-#  - Termux + dialog: prompt user to dial *544# (Saf) / *131# (Airtel) / *188#
-#    (Telkom), enter balance shown.
-#  - Non-interactive: returns -1 (unknown).
+#  USSD BALANCE PROBE  —  three back-ends, tried in this order:
+#   1) AUTO_USSD (Termux + root + uiautomator):
+#        su → am start tel:CODE → uiautomator dump → grep "<num> MB" → BACK
+#   2) Accessibility service (--accessibility / USSD_RESPONSE_FILE):
+#        external service writes balance-MB lines to a file; we tail -n1.
+#   3) Interactive prompt fallback (--interactive):
+#        dial via termux-telephony-call (best-effort), ask user for MB.
+#   4) Non-interactive: returns -1 (unknown).
 # =============================================================================
 ussd_code_for() {
   case "$1" in
@@ -310,15 +346,134 @@ ussd_code_for() {
   esac
 }
 
+# Pull a "<number> MB" / "<number> KB" / "<number> GB" balance figure from
+# arbitrary USSD-response text. Echoes KB on success, returns 1 on no match.
+parse_balance_to_kb() {
+  # Portable: grep first "<num><opt-space><unit>" anywhere in the input
+  # (works on raw uiautomator XML without stripping tags, since numbers in
+  # attribute values are still matched).
+  local m
+  m=$(grep -oEi '[0-9]+(\.[0-9]+)?[[:space:]]*(GB|MB|KB)' | head -n1)
+  [ -z "$m" ] && return 1
+  printf "%s\n" "$m" | awk '{
+      n=$0
+      u=toupper(substr(n, length(n)-1))
+      sub(/[[:space:]]*[GgMmKk][BbBb]$/, "", n)
+      v=n+0
+      if (u=="GB") v=v*1024*1024
+      else if (u=="MB") v=v*1024
+      if (v<=0) exit 1
+      printf "%d\n", v+0.5
+    }'
+}
+
+# Auto-dial a USSD code via root + intent, dump UI, parse number, dismiss.
+# Echoes KB on success, returns 1 on any failure.
+read_balance_auto() {
+  local code="$1"
+  [ "$AUTO_USSD" = "1" ] || return 1
+  local encoded="${code//#/%23}"
+  su -c "am start -a android.intent.action.CALL -d 'tel:${encoded}'" \
+    </dev/null >/dev/null 2>&1 || return 1
+  local xml="/sdcard/sni_ussd_$$.xml" i raw kb
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 1
+    su -c "uiautomator dump --compressed ${xml}" </dev/null >/dev/null 2>&1 || continue
+    raw=$(su -c "cat ${xml}" </dev/null 2>/dev/null) || continue
+    kb=$(printf "%s\n" "$raw" | parse_balance_to_kb) && [ -n "$kb" ] && break
+    kb=""
+  done
+  su -c "input keyevent KEYCODE_BACK" </dev/null >/dev/null 2>&1
+  su -c "rm -f ${xml}"               </dev/null >/dev/null 2>&1
+  [ -n "$kb" ] && { echo "$kb"; return 0; }
+  return 1
+}
+
+# Dispatch a USSD dial via the best available channel. Returns 0 if a dial
+# was actually requested, 1 if no dialer is available.
+dial_ussd() {
+  local code="$1"
+  if [ "$HAVE_ROOT" = "1" ]; then
+    local encoded="${code//#/%23}"
+    su -c "am start -a android.intent.action.CALL -d 'tel:${encoded}'" \
+      </dev/null >/dev/null 2>&1 && return 0
+  fi
+  if [ "$HAVE_TERMUX_API" = "1" ]; then
+    termux-telephony-call "$code" >/dev/null 2>&1 && return 0
+  fi
+  return 1
+}
+
+# Accessibility-service back-end: an external Android accessibility service
+# is monitoring USSD responses and appending each parsed balance line to
+# $USSD_RESPONSE_FILE. We trigger a fresh dial, wait for the file to gain a
+# new line (mtime advances), and then read that newest line.
+# Set TEST_ACCESSIBILITY_NODIAL=1 to skip the dial (used by self-test).
+read_balance_accessibility() {
+  [ -n "$USSD_RESPONSE_FILE" ] && [ -r "$USSD_RESPONSE_FILE" ] || return 1
+  local code; code=$(ussd_code_for "$CARRIER")
+  local before after waited last
+  before=$(wc -l < "$USSD_RESPONSE_FILE" 2>/dev/null || echo 0)
+  if [ "${TEST_ACCESSIBILITY_NODIAL:-0}" != "1" ]; then
+    dial_ussd "$code" || return 1
+  fi
+  waited=0
+  while [ "$waited" -lt 10 ]; do
+    sleep 1; waited=$((waited+1))
+    after=$(wc -l < "$USSD_RESPONSE_FILE" 2>/dev/null || echo 0)
+    [ "$after" -gt "$before" ] && break
+  done
+  [ "${after:-0}" -gt "${before:-0}" ] || return 1
+  last=$(tail -n1 "$USSD_RESPONSE_FILE" 2>/dev/null | parse_balance_to_kb) || return 1
+  [ -n "$last" ] && { echo "$last"; return 0; }
+  return 1
+}
+
+# Pick which balance back-end probe stage 5 should use, given current env.
+# Echoes exactly one of: auto | accessibility | interactive | yn | none
+# (Pure function of AUTO_USSD / USSD_RESPONSE_FILE / INTERACTIVE / TTY.)
+select_balance_backend() {
+  if [ "${AUTO_USSD:-0}" = "1" ];        then echo auto;           return; fi
+  if [ -n "${USSD_RESPONSE_FILE:-}" ];   then echo accessibility;  return; fi
+  if [ "${INTERACTIVE:-0}" = "1" ];      then echo interactive;    return; fi
+  # The y/n fallback is opt-in: only fires when --prompt-charge was passed
+  # (PROMPT_CHARGE=1). Never enabled implicitly by TTY presence — that would
+  # serialize and prompt-spam normal terminal runs.
+  if [ "${PROMPT_CHARGE:-0}" = "1" ];    then echo yn;             return; fi
+  echo none
+}
+
 read_balance_kb() {
-  local who="$1" code; code=$(ussd_code_for "$CARRIER")
+  local who="$1" code v; code=$(ussd_code_for "$CARRIER")
+  if v=$(read_balance_auto "$code");          then echo "$v"; return; fi
+  if v=$(read_balance_accessibility);          then echo "$v"; return; fi
   if [ "$INTERACTIVE" != "1" ]; then echo -1; return; fi
   if [ "$HAVE_TERMUX_API" = "1" ]; then
     termux-telephony-call "$code" >/dev/null 2>&1 || true
   fi
   printf "${C_Y}[BALANCE %s] dial %s on your phone, then enter remaining DATA in MB (or 'skip'): ${C_X}" "$who" "$code" >&2
-  local v; read -r v < /dev/tty || { echo -1; return; }
+  read -r v < /dev/tty || { echo -1; return; }
   case "$v" in skip|"") echo -1 ;; *) awk -v m="$v" 'BEGIN{printf "%d", m*1024}' ;; esac
+}
+
+# Graceful one-shot fallback: when no automated balance back-end is available
+# AND the user did not pass --interactive, prompt ONCE per host with the size
+# of the transfer just performed, accepting y/n. Echoes KB-charged-or-0 on
+# answer, -1 on skip / no-tty.
+prompt_charge_yn() {
+  local sni="$1" bytes="$2"
+  [ -t 0 ] || [ -e /dev/tty ] || { echo -1; return; }
+  local mb
+  mb=$(awk -v b="$bytes" 'BEGIN{printf "%.2f", b/1048576}')
+  printf "${C_Y}[BALANCE %s] just transferred %s MB. Did your data balance drop? [y/n/s=skip]: ${C_X}" \
+    "$sni" "$mb" >&2
+  local a
+  read -r a < /dev/tty || { echo -1; return; }
+  case "$a" in
+    y|Y|yes) awk -v b="$bytes" 'BEGIN{printf "%d", b/1024}' ;;
+    n|N|no)  echo 0 ;;
+    *)       echo -1 ;;
+  esac
 }
 
 # =============================================================================
@@ -423,24 +578,41 @@ probe() {
   fi
 
   # ---- stage 5: per-host balance delta.
-  # Done synchronously here when --interactive is on (CONCURRENCY=1 is enforced
-  # in that mode). Without --interactive, delta = -1 (unknown).
-  local bal_delta=-1
-  if [ "${INTERACTIVE:-0}" = "1" ]; then
-    local bp ba
-    bp=$(read_balance_kb "PRE  $sni") || bp=-1
-    # do a small targeted transfer to attribute charge to THIS host
+  # Back-end selection (per task contract):
+  #   AUTO_USSD                 → root + uiautomator pre/post USSD
+  #   accessibility back-end    → external service file pre/post (with dial)
+  #   --interactive             → MB pre/post via user prompt
+  #   no back-end + TTY present → single y/n prompt with transfer size
+  #   none of the above         → bal_delta=-1 (unknown)
+  local bal_delta=-1 transfer_bytes=0 backend
+  backend=$(select_balance_backend)
+  if [ "$backend" != "none" ]; then
+    local bp=-1 ba=-1
+    case "$backend" in auto|accessibility|interactive)
+      bp=$(read_balance_kb "PRE  $sni"); [ -z "$bp" ] && bp=-1 ;;
+    esac
+    # Targeted transfer to attribute charge to THIS host. Capture actual bytes.
     if [ "${SKIP_THRU:-0}" != "1" ]; then
-      timeout "$THRU_TIMEOUT" curl -sk --http1.1 -o /dev/null \
+      transfer_bytes=$(timeout "$THRU_TIMEOUT" curl -sk --http1.1 -o /dev/null \
+        -w "%{size_download}" \
         --resolve "${sni}:${PORT}:${route_ip}" \
         -H "Host: ${DOMAIN}" \
-        "https://${sni}:${PORT}${BLOB_PATH}" >/dev/null 2>&1 || true
+        "https://${sni}:${PORT}${BLOB_PATH}" 2>/dev/null || echo 0)
+      transfer_bytes=${transfer_bytes%.*}
+      [ -z "$transfer_bytes" ] && transfer_bytes=0
     fi
-    ba=$(read_balance_kb "POST $sni") || ba=-1
-    if [ "$bp" -ge 0 ] && [ "$ba" -ge 0 ]; then
-      bal_delta=$(( bp - ba ))
-      [ "$bal_delta" -lt 0 ] && bal_delta=0
-    fi
+    case "$backend" in
+      auto|accessibility|interactive)
+        ba=$(read_balance_kb "POST $sni"); [ -z "$ba" ] && ba=-1
+        if [ "$bp" -ge 0 ] && [ "$ba" -ge 0 ]; then
+          bal_delta=$(( bp - ba ))
+          [ "$bal_delta" -lt 0 ] && bal_delta=0
+        fi ;;
+      yn)
+        # Graceful fallback: one-shot y/n prompt with the transfer size.
+        bal_delta=$(prompt_charge_yn "$sni" "$transfer_bytes")
+        [ -z "$bal_delta" ] && bal_delta=-1 ;;
+    esac
   fi
 
   # ---- stage 5b: per-host tunnel byte-flow verify (only when --verify-tunnel
@@ -657,6 +829,87 @@ PY
       printf "  ${C_R}FAIL${C_X}  bad path constant: %s\n" "$p"; fails=$((fails+1))
     fi
   done
+  # ---- balance-parser tests ----
+  echo
+  echo "${C_BOLD}parse_balance_to_kb${C_X}"
+  pcheck() {
+    local exp="$1" in_str="$2" got
+    got=$(printf "%s\n" "$in_str" | parse_balance_to_kb || echo "ERR")
+    if [ "$got" = "$exp" ]; then
+      printf "  ${C_G}ok${C_X}    [%s]  ->  %s\n" "$in_str" "$got"
+    else
+      printf "  ${C_R}FAIL${C_X}  [%s]  ->  %s (want %s)\n" "$in_str" "$got" "$exp"
+      fails=$((fails+1))
+    fi
+  }
+  pcheck "251392"  "Your data balance is 245.50 MB valid till tomorrow"
+  pcheck "1572864" '<node text="Bundle: 1.5 GB remaining"/>'
+  pcheck "150"     "150 KB left"
+  pcheck "ERR"     "no balance here"
+  pcheck "ERR"     "0.0 MB"
+
+  # ---- backend-selection / fallback-gating tests ----
+  # Each case: set env, capture select_balance_backend, restore.
+  echo
+  echo "${C_BOLD}select_balance_backend${C_X}"
+  local _saved_au="${AUTO_USSD:-}" _saved_uf="${USSD_RESPONSE_FILE:-}" \
+        _saved_ia="${INTERACTIVE:-}" _saved_pc="${PROMPT_CHARGE:-}"
+  bcheck() {
+    local exp="$1" desc="$2" au="$3" uf="$4" ia="$5" pc="$6" got
+    AUTO_USSD="$au" USSD_RESPONSE_FILE="$uf" INTERACTIVE="$ia" PROMPT_CHARGE="$pc"
+    got=$(select_balance_backend)
+    if [ "$got" = "$exp" ]; then
+      printf "  ${C_G}ok${C_X}    %-50s -> %s\n" "$desc" "$got"
+    else
+      printf "  ${C_R}FAIL${C_X}  %-50s -> %s (want %s)\n" "$desc" "$got" "$exp"
+      fails=$((fails+1))
+    fi
+  }
+  # bcheck EXPECT DESC AUTO_USSD USSD_RESPONSE_FILE INTERACTIVE PROMPT_CHARGE
+  bcheck auto          "AUTO_USSD=1 wins"                        1 ""        0 0
+  bcheck accessibility "USSD_RESPONSE_FILE set"                  0 "/tmp/x"  0 0
+  bcheck interactive   "INTERACTIVE=1, no auto"                  0 ""        1 0
+  bcheck yn            "PROMPT_CHARGE=1, no other backend"       0 ""        0 1
+  bcheck none          "default: nothing set (non-interactive)"  0 ""        0 0
+  # Critical: a default terminal run must NOT silently enter prompt mode.
+  bcheck none          "TTY present but no opt-in flag → none"   0 ""        0 0
+  bcheck auto          "auto wins over interactive + prompt"     1 ""        1 1
+  bcheck accessibility "accessibility wins over prompt"          0 "/tmp/x"  0 1
+  bcheck interactive   "interactive wins over prompt"            0 ""        1 1
+  AUTO_USSD="$_saved_au" USSD_RESPONSE_FILE="$_saved_uf" \
+    INTERACTIVE="$_saved_ia" PROMPT_CHARGE="$_saved_pc"
+
+  # ---- accessibility pre/post sequencing test ----
+  # The accessibility back-end MUST trigger a fresh dial each call and only
+  # accept the response that arrives AFTER it dialed. Stale file content must
+  # not be returned. We bypass the actual dial via TEST_ACCESSIBILITY_NODIAL=1
+  # and simulate the external service appending a new line during the wait.
+  echo
+  echo "${C_BOLD}read_balance_accessibility (pre/post sequencing)${C_X}"
+  local tmpf; tmpf=$(mktemp)
+  echo "100 MB" > "$tmpf"
+  local got
+  got=$(USSD_RESPONSE_FILE="$tmpf" CARRIER=safaricom \
+        TEST_ACCESSIBILITY_NODIAL=1 read_balance_accessibility 2>/dev/null) || true
+  if [ -z "$got" ]; then
+    printf "  ${C_G}ok${C_X}    stale file (no new line) -> read fails as required\n"
+  else
+    printf "  ${C_R}FAIL${C_X}  stale file returned '%s' (want empty)\n" "$got"
+    fails=$((fails+1))
+  fi
+  # Append a new line during the wait → must succeed and parse it.
+  ( sleep 2; echo "42 MB" >> "$tmpf" ) &
+  local appender=$!
+  got=$(USSD_RESPONSE_FILE="$tmpf" CARRIER=safaricom \
+        TEST_ACCESSIBILITY_NODIAL=1 read_balance_accessibility 2>/dev/null) || true
+  wait "$appender" 2>/dev/null || true
+  if [ "$got" = "43008" ]; then
+    printf "  ${C_G}ok${C_X}    fresh line appended      -> %s KB\n" "$got"
+  else
+    printf "  ${C_R}FAIL${C_X}  fresh line appended      -> '%s' (want 43008)\n" "$got"
+    fails=$((fails+1))
+  fi
+  rm -f "$tmpf" /tmp/.sh_acc1
 
   echo
   if [ "$fails" = "0" ]; then echo "${C_G}all tests passed${C_X}"; else echo "${C_R}${fails} failure(s)${C_X}"; exit 1; fi
@@ -674,6 +927,9 @@ cmd_hunt() {
       --seed-only)     seed_only=1; shift;;
       --no-throughput) export SKIP_THRU=1; shift;;
       --interactive)   INTERACTIVE=1; shift;;
+      --prompt-charge) PROMPT_CHARGE=1; shift;;
+      --no-auto-ussd)  AUTO_USSD=0; shift;;
+      --accessibility) USSD_RESPONSE_FILE="$2"; shift 2;;
       --radio-tag)     RADIO_TAG="$2"; shift 2;;
       --verify-tunnel) VERIFY_TUNNEL=1; export VERIFY_TUNNEL; shift;;
       --out)           out_dir="$2"; shift 2;;
@@ -754,24 +1010,35 @@ ${C_BOLD}${C_C}═════════════════════�
   Carrier        : ${C_M}${CARRIER}${C_X}    Radio: $(network_type_now)
   Candidates     : ${total}  $([ "$seed_only" = 1 ] && echo "(seeds only)" || echo "(corpus)")
   Concurrency    : ${CONCURRENCY}    Throughput: $([ "${SKIP_THRU:-0}" = 1 ] && echo SKIPPED || echo "${BLOB_SIZE_MB}MB")
-  Balance probe  : $([ "$INTERACTIVE" = 1 ] && echo "INTERACTIVE (USSD pre/post)" || echo "off (use --interactive)")
+  Balance probe  : $(
+      case "$(select_balance_backend)" in
+        auto)          echo "AUTO (root+uiautomator USSD)" ;;
+        accessibility) echo "ACCESSIBILITY ($USSD_RESPONSE_FILE)" ;;
+        interactive)   echo "INTERACTIVE (USSD MB pre/post)" ;;
+        yn)            echo "PROMPT-CHARGE (one-shot y/n per host)" ;;
+        none)          echo "off (use --interactive / --accessibility / --prompt-charge)" ;;
+      esac)
   Output dir     : ${out_dir}
 ${C_BOLD}${C_C}═══════════════════════════════════════════════════════════════${C_X}
 EOF
 
-  # In interactive (per-host USSD) mode, force serial scanning so balance
-  # deltas can be attributed to one host at a time.
-  if [ "$INTERACTIVE" = "1" ]; then
+  # Force serial scanning ONLY when an actual balance back-end is selected
+  # (so a single transfer can be billed to one host at a time). Default
+  # non-interactive corpus scans keep their previous concurrency.
+  if [ "$(select_balance_backend)" != "none" ]; then
     CONCURRENCY=1
-    log "Interactive mode: forcing concurrency=1 for per-host balance attribution"
+    log "Per-host balance probe enabled ($(select_balance_backend)): forcing concurrency=1"
   fi
 
   export DOMAIN PORT WS_PATH BLOB_PATH TIMEOUT THRU_TIMEOUT TARGET_IP CARRIER
   export RADIO_TAG LATENCY_SAMPLES SKIP_THRU HAVE_TERMUX_API INTERACTIVE
   export VERIFY_TUNNEL VMESS_PATH VLESS_PATH UUID_VMESS UUID_VLESS
+  export AUTO_USSD HAVE_ROOT HAVE_UIAUTOMATOR USSD_RESPONSE_FILE PROMPT_CHARGE
   export -f probe ws_probe_via_ip classify_family classify_tier
   export -f network_type_now read_balance_kb ussd_code_for
   export -f tunnel_test_one _tunnel_py
+  export -f read_balance_auto read_balance_accessibility parse_balance_to_kb
+  export -f prompt_charge_yn dial_ussd select_balance_backend
 
   local started; started=$(date +%s); local n=0
   ( while [ ! -f "${out_dir}/.done" ]; do
