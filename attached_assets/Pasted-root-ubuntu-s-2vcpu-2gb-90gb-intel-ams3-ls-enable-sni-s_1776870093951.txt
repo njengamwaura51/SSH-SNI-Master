@@ -1,0 +1,455 @@
+root@ubuntu-s-2vcpu-2gb-90gb-intel-ams3:~# ls
+enable-sni-spoof.sh  fix-tunnel.sh  repair-shopthelook.sh  shopthelook.nginx.bak.1776775799
+root@ubuntu-s-2vcpu-2gb-90gb-intel-ams3:~# velour-deploy
+>> git pull
+remote: Enumerating objects: 381, done.
+remote: Counting objects: 100% (381/381), done.
+remote: Compressing objects: 100% (127/127), done.
+remote: Total 338 (delta 248), reused 301 (delta 211), pack-reused 0 (from 0)
+Receiving objects: 100% (338/338), 306.89 KiB | 7.67 MiB/s, done.
+Resolving deltas: 100% (248/248), completed with 37 local objects.
+From https://github.com/pirate101-lab/Catalog-Uploader
+   affaf81..beb16d5  main       -> origin/main
+Updating affaf81..beb16d5
+Fast-forward
+ artifacts/api-server/build.mjs                              |   33 +-
+ artifacts/api-server/package.json                           |    3 +-
+ artifacts/api-server/src/index.ts                           |   58 ++
+ artifacts/api-server/src/lib/catalog.test.ts                |  110 ++++
+ artifacts/api-server/src/lib/catalog.ts                     |  215 +++++++
+ artifacts/api-server/src/lib/email.ts                       |  357 +++++++++++-
+ artifacts/api-server/src/lib/orderViewToken.test.ts         |  187 ++++++
+ artifacts/api-server/src/lib/orderViewToken.ts              |   66 +++
+ artifacts/api-server/src/lib/paystackResume.test.ts         |  146 +++++
+ artifacts/api-server/src/lib/paystackResume.ts              |   59 ++
+ artifacts/api-server/src/lib/rateLimit.ts                   |  137 +++++
+ artifacts/api-server/src/lib/recategorisationRules.ts       |  205 +++++++
+ artifacts/api-server/src/lib/reclassificationPersistence.ts |  117 ++++
+ artifacts/api-server/src/lib/siteSettings.ts                |    1 +
+ artifacts/api-server/src/routes/admin.ts                    |  490 ++++++++++++++--
+ artifacts/api-server/src/routes/checkout.ts                 |   85 +++
+ artifacts/api-server/src/routes/payments.ts                 |  129 ++++-
+ artifacts/api-server/src/routes/storefront.ts               |  167 +++++-
+ artifacts/api-server/tsconfig.json                          |    4 +-
+ artifacts/fashion/public/opengraph.jpg                      |  Bin 90175 -> 107736 bytes
+ artifacts/fashion/src/App.tsx                               |    6 +
+ artifacts/fashion/src/admin/EmailsAdmin.tsx                 |    1 +
+ artifacts/fashion/src/admin/OrdersAdmin.tsx                 |  119 ++++
+ artifacts/fashion/src/admin/PaymentsAdmin.tsx               |   10 +
+ artifacts/fashion/src/admin/ProductsAdmin.tsx               | 1126 +++++++++++++++++++++++++++++++++---
+ artifacts/fashion/src/admin/SettingsAdmin.tsx               |   68 ++-
+ artifacts/fashion/src/admin/api.ts                          |  103 +++-
+ artifacts/fashion/src/components/Footer.tsx                 |    9 +-
+ artifacts/fashion/src/pages/Checkout.tsx                    |   51 +-
+ artifacts/fashion/src/pages/OrderLookup.tsx                 |  130 +++++
+ artifacts/fashion/src/pages/OrderStatus.tsx                 |  378 ++++++++++++
+ artifacts/fashion/src/pages/Profile.tsx                     |   10 +
+ artifacts/fashion/src/pages/Shop.tsx                        |   11 +-
+ artifacts/fashion/src/pages/SignIn.tsx                      |   11 +
+ lib/db/drizzle/0000_nice_shape.sql                          |    9 +
+ lib/db/drizzle/0001_superb_magneto.sql                      |   15 +
+ lib/db/drizzle/0002_nervous_shadowcat.sql                   |   13 +
+ lib/db/drizzle/meta/0000_snapshot.json                      | 1580 ++++++++++++++++++++++++++++++++++++++++++++++++++
+ lib/db/drizzle/meta/0001_snapshot.json                      | 1671 +++++++++++++++++++++++++++++++++++++++++++++++++++++
+ lib/db/drizzle/meta/0002_snapshot.json                      | 1755 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ lib/db/drizzle/meta/_journal.json                           |   27 +
+ lib/db/src/schema/admin.ts                                  |  104 ++++
+ lib/db/src/schema/index.ts                                  |    1 +
+ lib/db/src/schema/rateLimit.ts                              |   38 ++
+ package.json                                                |    3 +-
+ 45 files changed, 9630 insertions(+), 188 deletions(-)
+ create mode 100644 artifacts/api-server/src/lib/catalog.test.ts
+ create mode 100644 artifacts/api-server/src/lib/orderViewToken.test.ts
+ create mode 100644 artifacts/api-server/src/lib/orderViewToken.ts
+ create mode 100644 artifacts/api-server/src/lib/paystackResume.test.ts
+ create mode 100644 artifacts/api-server/src/lib/paystackResume.ts
+ create mode 100644 artifacts/api-server/src/lib/rateLimit.ts
+ create mode 100644 artifacts/api-server/src/lib/recategorisationRules.ts
+ create mode 100644 artifacts/api-server/src/lib/reclassificationPersistence.ts
+ create mode 100644 artifacts/fashion/src/pages/OrderLookup.tsx
+ create mode 100644 artifacts/fashion/src/pages/OrderStatus.tsx
+ create mode 100644 lib/db/drizzle/0000_nice_shape.sql
+ create mode 100644 lib/db/drizzle/0001_superb_magneto.sql
+ create mode 100644 lib/db/drizzle/0002_nervous_shadowcat.sql
+ create mode 100644 lib/db/drizzle/meta/0000_snapshot.json
+ create mode 100644 lib/db/drizzle/meta/0001_snapshot.json
+ create mode 100644 lib/db/drizzle/meta/0002_snapshot.json
+ create mode 100644 lib/db/drizzle/meta/_journal.json
+ create mode 100644 lib/db/src/schema/rateLimit.ts
+>> pnpm install
+Scope: all 10 workspace projects
+Lockfile is up to date, resolution step is skipped
+Already up to date
+. preinstall$ sh -c 'rm -f package-lock.json yarn.lock; case "$npm_config_user_agent" in pnpm/*) ;; *) echo "Use pnpm inst…
+└─ Done in 19ms
+Done in 3.7s using pnpm v10.33.0
+>> build api
+
+> @workspace/api-server@0.0.0 build /home/velour/velour/artifacts/api-server
+> node ./build.mjs
+
+
+  dist/index.mjs                 252.2kb
+  dist/pino-worker.mjs           153.3kb
+  dist/pino-file.mjs             142.0kb
+  dist/thread-stream-worker.mjs    7.3kb
+
+⚡ Done in 170ms
+>> build web
+
+> @workspace/fashion@0.0.0 build /home/velour/velour/artifacts/fashion
+> PORT=${PORT:-5000} BASE_PATH=${BASE_PATH:-/} vite build --config vite.config.ts
+
+vite v7.3.2 building client environment for production...
+src/components/ui/tooltip.tsx (2:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+src/components/ui/sonner.tsx (2:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+src/components/ui/label.tsx (2:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+src/components/ui/sheet.tsx (2:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+src/components/ui/select.tsx (2:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+✓ 2304 modules transformed.
+dist/public/index.html                                  2.39 kB │ gzip:   1.00 kB
+dist/public/assets/index-BNF06uXg.css                 144.73 kB │ gzip:  22.92 kB
+dist/public/assets/loader-circle-Bf_6oZbW.js            0.14 kB │ gzip:   0.15 kB
+dist/public/assets/usePaymentEventStream-BoT0pc-8.js    0.91 kB │ gzip:   0.55 kB
+dist/public/assets/CustomersAdmin-BwsRYLq7.js           1.89 kB │ gzip:   0.72 kB
+dist/public/assets/switch-CbqbtL8a.js                   2.45 kB │ gzip:   1.23 kB
+dist/public/assets/EmailsAdmin-BZi17-uI.js              3.69 kB │ gzip:   1.50 kB
+dist/public/assets/ReviewsAdmin-CU2K7E3V.js             3.90 kB │ gzip:   1.65 kB
+dist/public/assets/AdminLogin-3ba3rRHA.js               4.66 kB │ gzip:   1.95 kB
+dist/public/assets/HeroAdmin-BixJR7be.js                6.00 kB │ gzip:   2.43 kB
+dist/public/assets/AdminsAdmin-BQKQRh7V.js              9.12 kB │ gzip:   3.33 kB
+dist/public/assets/OrdersAdmin-CMpFHlq5.js             10.99 kB │ gzip:   3.41 kB
+dist/public/assets/Dashboard-DFV4YtnK.js               11.41 kB │ gzip:   3.42 kB
+dist/public/assets/api-CFWx1jD2.js                     13.30 kB │ gzip:   4.24 kB
+dist/public/assets/PaymentsAdmin-CmktSBLn.js           18.28 kB │ gzip:   5.79 kB
+dist/public/assets/SettingsAdmin-Df8VqXQJ.js           20.22 kB │ gzip:   6.25 kB
+dist/public/assets/ProductsAdmin-6pJ2cYwU.js           46.67 kB │ gzip:  13.27 kB
+dist/public/assets/index-CF2NDdRX.js                  763.99 kB │ gzip: 235.28 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 15.83s
+>> drizzle push
+
+> @workspace/db@0.0.0 push /home/velour/velour/lib/db
+> drizzle-kit push --config ./drizzle.config.ts
+
+Reading config file '/home/velour/velour/lib/db/drizzle.config.ts'
+Using 'pg' driver for database querying
+[✓] Pulling schema from database...
+[✓] Changes applied
+Use --update-env to update environment variables
+[PM2] Applying action restartProcessId on app [velour-api](ids: [ 0 ])
+[PM2] [velour-api](0) ✓
+┌────┬────────────────────┬──────────┬──────┬───────────┬──────────┬──────────┐
+│ id │ name               │ mode     │ ↺    │ status    │ cpu      │ memory   │
+├────┼────────────────────┼──────────┼──────┼───────────┼──────────┼──────────┤
+│ 0  │ velour-api         │ fork     │ 1    │ online    │ 0%       │ 19.0mb   │
+│ 1  │ velour-web         │ fork     │ 194  │ online    │ 100%     │ 81.9mb   │
+└────┴────────────────────┴──────────┴──────┴───────────┴──────────┴──────────┘
+Use --update-env to update environment variables
+[PM2] Applying action restartProcessId on app [velour-web](ids: [ 1 ])
+[PM2] [velour-web](1) ✓
+┌────┬────────────────────┬──────────┬──────┬───────────┬──────────┬──────────┐
+│ id │ name               │ mode     │ ↺    │ status    │ cpu      │ memory   │
+├────┼────────────────────┼──────────┼──────┼───────────┼──────────┼──────────┤
+│ 0  │ velour-api         │ fork     │ 1    │ online    │ 107.7%   │ 72.6mb   │
+│ 1  │ velour-web         │ fork     │ 196  │ online    │ 0%       │ 8.3mb    │
+└────┴────────────────────┴──────────┴──────┴───────────┴──────────┴──────────┘
+[PM2] Saving current process list...
+[PM2] Successfully saved in /home/velour/.pm2/dump.pm2
+>> deployed: beb16d5
+┌────┬────────────────────┬──────────┬──────┬───────────┬──────────┬──────────┐
+│ id │ name               │ mode     │ ↺    │ status    │ cpu      │ memory   │
+├────┼────────────────────┼──────────┼──────┼───────────┼──────────┼──────────┤
+│ 0  │ velour-api         │ fork     │ 1    │ online    │ 0%       │ 84.7mb   │
+│ 1  │ velour-web         │ fork     │ 196  │ online    │ 0%       │ 77.5mb   │
+└────┴────────────────────┴──────────┴──────┴───────────┴──────────┴──────────┘
+root@ubuntu-s-2vcpu-2gb-90gb-intel-ams3:~# cat enable-sni-spoof.sh
+#!/usr/bin/env bash
+set -euo pipefail
+
+CONF=/etc/nginx/sites-available/shopthelook
+BACKUP=/root/shopthelook.nginx.bak.$(date +%s)
+
+cp -a "$CONF" "$BACKUP"
+echo ">>> Backed up current config to $BACKUP"
+
+# Make the HTTPS server block the default for :443 so any SNI lands on it.
+# Idempotent: only changes the line if it doesn't already say default_server.
+sed -i 's|^\(\s*\)listen 443 ssl http2;|\1listen 443 ssl http2 default_server;|' "$CONF"
+sed -i 's|^\(\s*\)listen \[::\]:443 ssl http2;|\1listen [::]:443 ssl http2 default_server;|' "$CONF"
+
+# Also make :80 default_server so port-80 SNI tricks (rare) still redirect.
+sed -i '0,/^\s*listen 80;/{s|^\(\s*\)listen 80;|\1listen 80 default_server;|}' "$CONF"
+sed -i '0,/^\s*listen \[::\]:80;/{s|^\(\s*\)listen \[::\]:80;|\1listen [::]:80 default_server;|}' "$CONF"
+
+echo ">>> Patched directives:"
+grep -nE 'listen (80|443|\[::\]:(80|443))' "$CONF"
+
+# Validate; restore on failure.
+if ! nginx -t; then
+  echo ">>> nginx -t FAILED — restoring backup."
+  cp -a "$BACKUP" "$CONF"
+  nginx -t
+  exit 1
+fi
+
+systemctl reload nginx
+echo ">>> nginx reloaded."
+
+echo
+echo ">>> Proof: WS upgrade succeeds even when SNI = myaccount.telkom.co.ke"
+curl -sk -o /dev/null -D - --http1.1 \
+  --resolve myaccount.telkom.co.ke:443:127.0.0.1 \
+  --resolve shopthelook.page:443:127.0.0.1 \
+  --connect-to shopthelook.page:443:myaccount.telkom.co.ke:443 \
+  -H "Upgrade: websocket" -H "Connection: Upgrade" \
+  -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
+  -H "Sec-WebSocket-Version: 13" \
+  https://shopthelook.page/ws-bridge-x9k2 | head -5
+
+echo
+echo ">>> Sanity: site itself still works on real SNI"
+curl -sk --resolve shopthelook.page:443:127.0.0.1 -o /dev/null \
+  -w "site code=%{http_code}\n" https://shopthelook.page/
+root@ubuntu-s-2vcpu-2gb-90gb-intel-ams3:~# cat fix-tunnel.sh
+#!/usr/bin/env bash
+set -euo pipefail
+
+# 1. Clean up duplicate / stale site files
+rm -f /etc/nginx/sites-enabled/shopthelook /etc/nginx/sites-enabled/shopthelook.page
+mkdir -p /etc/nginx/sites-available/archive
+shopt -s nullglob
+mv /etc/nginx/sites-available/shopthelook.page \
+   /etc/nginx/sites-available/shopthelook.backup.* \
+   /etc/nginx/sites-available/archive/ 2>/dev/null || true
+shopt -u nullglob
+
+# 2. Write the clean nginx config
+cat > /etc/nginx/sites-available/shopthelook <<'NGINX'
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name shopthelook.page www.shopthelook.page;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name shopthelook.page www.shopthelook.page;
+
+    ssl_certificate     /etc/letsencrypt/live/shopthelook.page/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/shopthelook.page/privkey.pem;
+    include             /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam         /etc/letsencrypt/ssl-dhparams.pem;
+
+    client_max_body_size 25m;
+    proxy_http_version 1.1;
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    location = /ws-bridge-x9k2 {
+        proxy_pass http://127.0.0.1:8888;
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_buffering         off;
+        proxy_request_buffering off;
+        proxy_read_timeout      7d;
+        proxy_send_timeout      7d;
+        tcp_nodelay             on;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_cache_bypass          $http_upgrade;
+        proxy_read_timeout          60s;
+    }
+}
+NGINX
+
+# 3. Enable, validate, reload — but DON'T reload if validate fails
+ln -sf /etc/nginx/sites-available/shopthelook /etc/nginx/sites-enabled/shopthelook
+if ! nginx -t; then
+    echo ">>> nginx config test FAILED — not reloading. Site keeps running on the old config."
+    exit 1
+fi
+systemctl reload nginx
+echo ">>> nginx reloaded."
+
+# 4. Smoke tests (failures here don't roll anything back)
+set +e
+echo
+echo "=== HTTP -> HTTPS redirect ==="
+curl -s -o /dev/null -D - -H "Host: shopthelook.page" http://127.0.0.1/ | head -5
+
+echo
+echo "=== HTTPS site root ==="
+curl -sk -o /dev/null -w "code=%{http_code}\n" \
+    --resolve shopthelook.page:443:127.0.0.1 \
+    https://shopthelook.page/
+
+echo
+echo "=== HTTPS WS tunnel handshake (expect 101) ==="
+curl -sk -o /dev/null -D - \
+    --resolve shopthelook.page:443:127.0.0.1 \
+    -H "Upgrade: websocket" -H "Connection: Upgrade" \
+    -H "Sec-WebSocket-Key: x3JJHMbDL1EzLkh9GBhXDw==" -H "Sec-WebSocket-Version: 13" \
+    https://shopthelook.page/ws-bridge-x9k2 | head -3
+root@ubuntu-s-2vcpu-2gb-90gb-intel-ams3:~# cat repair-shopthelook.sh
+#!/usr/bin/env bash
+set -euo pipefail
+log(){ printf '\n>>> %s\n' "$*"; }
+
+APP_USER=velour
+APP_DIR=/home/velour/velour
+DIST_DIR=$APP_DIR/artifacts/fashion/dist/public
+
+log "1. Build the fashion SPA (as $APP_USER)"
+sudo -u "$APP_USER" -H bash -lc "
+  set -euo pipefail
+  cd '$APP_DIR'
+  command -v pnpm >/dev/null || { echo 'pnpm missing for $APP_USER'; exit 1; }
+  pnpm install --frozen-lockfile=false --prefer-offline
+  pnpm --filter @workspace/fashion build
+"
+
+[ -f "$DIST_DIR/index.html" ] || { echo "Build did not produce $DIST_DIR/index.html"; exit 1; }
+log "Build OK -> $DIST_DIR"
+
+log "2. Remove the broken velour-web pm2 process (we no longer need it)"
+sudo -u "$APP_USER" -H bash -lc '
+  pm2 delete velour-web 2>/dev/null || true
+  pm2 save
+'
+
+log "3. Make sure velour-api is alive on :8080"
+sudo -u "$APP_USER" -H bash -lc 'pm2 restart velour-api --update-env || pm2 start --name velour-api --cwd '"$APP_DIR"' "node --enable-source-maps ./artifacts/api-server/dist/index.mjs"; pm2 save'
+sleep 2
+ss -ltnp | grep ':8080 ' || { echo "velour-api did not bind :8080"; sudo -u "$APP_USER" -H pm2 logs velour-api --lines 30 --nostream; exit 1; }
+
+log "4. Write the clean nginx config (static FE + /api proxy + hidden WS tunnel)"
+cat > /etc/nginx/sites-available/shopthelook <<'NGINX'
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+# --- HTTP -> HTTPS ---
+server {
+    listen 80;
+    listen [::]:80;
+    server_name shopthelook.page www.shopthelook.page;
+    return 301 https://$host$request_uri;
+}
+
+# --- HTTPS: static SPA + /api proxy + tunnel ---
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name shopthelook.page www.shopthelook.page;
+
+    ssl_certificate     /etc/letsencrypt/live/shopthelook.page/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/shopthelook.page/privkey.pem;
+    include             /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam         /etc/letsencrypt/ssl-dhparams.pem;
+
+    # Static SPA
+    root /home/velour/velour/artifacts/fashion/dist/public;
+    index index.html;
+    client_max_body_size 25m;
+
+    # Long-cache hashed assets
+    location ~* \.(?:js|css|woff2?|ttf|eot|otf|svg|png|jpe?g|webp|gif|ico|map)$ {
+        try_files $uri =404;
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+        access_log off;
+    }
+
+    # SPA fallback
+    location / {
+        try_files $uri $uri/ /index.html;
+        add_header Cache-Control "no-cache";
+    }
+
+    # API -> velour-api on :8080
+    location /api/ {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade           $http_upgrade;
+        proxy_set_header Connection        $connection_upgrade;
+        proxy_read_timeout 120s;
+    }
+
+    # Hidden SSH-over-WS tunnel (keep your existing setup)
+    location = /ws-bridge-x9k2 {
+        proxy_pass http://127.0.0.1:8888;
+        proxy_http_version 1.1;
+        proxy_set_header Host       $host;
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_buffering         off;
+        proxy_request_buffering off;
+        proxy_read_timeout      7d;
+        proxy_send_timeout      7d;
+        tcp_nodelay             on;
+    }
+}
+NGINX
+
+log "5. Permissions: nginx (www-data) needs to read the velour home"
+chmod o+x /home/velour /home/velour/velour /home/velour/velour/artifacts /home/velour/velour/artifacts/fashion /home/velour/velour/artifacts/fashion/dist 2>/dev/null || true
+
+log "6. Enable + clean stale symlinks + validate"
+rm -f /etc/nginx/sites-enabled/shopthelook /etc/nginx/sites-enabled/shopthelook.page /etc/nginx/sites-enabled/default
+ln -sf /etc/nginx/sites-available/shopthelook /etc/nginx/sites-enabled/shopthelook
+
+if ! nginx -t; then
+  echo ">>> nginx test FAILED — leaving running config alone."
+  exit 1
+fi
+
+log "7. Reload nginx (safe — current site keeps serving until reload completes)"
+systemctl reload nginx || systemctl start nginx
+
+log "8. Drop legacy haproxy / sni-spoof leftovers"
+systemctl disable --now haproxy 2>/dev/null || true
+apt-get -y purge haproxy 2>/dev/null || true
+rm -rf /etc/ssl/sni-spoof /etc/haproxy 2>/dev/null || true
+
+log "9. Smoke tests"
+set +e
+echo "--- ports ---"
+ss -ltnp | grep -E ':(80|443|8080|8888) '
+echo
+echo "--- HTTP redirect ---"
+curl -s -o /dev/null -D - -H "Host: shopthelook.page" http://127.0.0.1/ | head -5
+echo "--- HTTPS site ---"
+curl -sk --resolve shopthelook.page:443:127.0.0.1 -o /dev/null -w "code=%{http_code} bytes=%{size_download}\n" https://shopthelook.page/
+echo "--- HTTPS /api/storefront/products?limit=1 ---"
+curl -sk --resolve shopthelook.page:443:127.0.0.1 -o /dev/null -w "code=%{http_code} bytes=%{size_download}\n" "https://shopthelook.page/api/storefront/products?limit=1"
+echo "--- HTTPS WS tunnel (expect 101) ---"
+curl -sk -o /dev/null -D - --resolve shopthelook.page:443:127.0.0.1 \
+  -H "Upgrade: websocket" -H "Connection: Upgrade" \
+  -H "Sec-WebSocket-Key: x3JJHMbDL1EzLkh9GBhXDw==" -H "Sec-WebSocket-Version: 13" \
+  https://shopthelook.page/ws-bridge-x9k2 | head -3
+
+log "DONE."
+root@ubuntu-s-2vcpu-2gb-90gb-intel-ams3:~# 
