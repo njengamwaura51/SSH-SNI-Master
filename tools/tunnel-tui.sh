@@ -48,6 +48,40 @@ need_cmd() {
 
 is_active() { systemctl is-active --quiet "$1" 2>/dev/null; }
 
+# Extracts VMESS_UUID and VLESS_UUID from v2ray config into the caller's env.
+get_v2ray_uuids() {
+  VMESS_UUID=""; VLESS_UUID=""
+  [ -r "$V2RAY_CFG" ] || return 0
+  command -v jq >/dev/null || return 0
+  VMESS_UUID="$(jq -r '.. | objects | select(.protocol=="vmess") | .settings.clients[0].id' "$V2RAY_CFG" 2>/dev/null | head -n1)"
+  VLESS_UUID="$(jq -r '.. | objects | select(.protocol=="vless") | .settings.clients[0].id' "$V2RAY_CFG" 2>/dev/null | head -n1)"
+  [ "$VMESS_UUID" = "null" ] && VMESS_UUID=""
+  [ "$VLESS_UUID" = "null" ] && VLESS_UUID=""
+}
+
+# Build vmess:// share URI from $1=uuid (uses module-scope $DOMAIN/$VMESS_PATH)
+build_vmess_uri() {
+  local uuid="$1"
+  local v_json
+  v_json="$(jq -nc --arg add "$DOMAIN" --arg id "$uuid" --arg path "$VMESS_PATH" \
+    '{v:"2",ps:"tunnel",add:$add,port:"443",id:$id,aid:"0",scy:"auto",net:"ws",type:"none",host:$add,path:$path,tls:"tls",sni:$add}')"
+  printf 'vmess://%s' "$(printf '%s' "$v_json" | base64 -w0)"
+}
+
+# Build vless:// share URI from $1=uuid
+build_vless_uri() {
+  local uuid="$1" path_enc
+  path_enc="$(printf '%s' "$VLESS_PATH" | jq -sRr @uri)"
+  printf 'vless://%s@%s:443?encryption=none&security=tls&sni=%s&type=ws&host=%s&path=%s#tunnel' \
+    "$uuid" "$DOMAIN" "$DOMAIN" "$DOMAIN" "$path_enc"
+}
+
+# Build the standard HTTP-Custom WS upgrade payload for /ws-bridge-x9k2
+build_ssh_payload() {
+  printf 'GET %s HTTP/1.1[crlf]Host: %s[crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf]User-Agent: Mozilla/5.0[crlf][crlf]' \
+    "$WS_BRIDGE_PATH" "$DOMAIN"
+}
+
 # Render text in $1 inside a scrollable textbox; auto-sized.
 show_text() {
   local title="$1" body="$2"
@@ -99,10 +133,8 @@ action_connection() {
     whiptail --msgbox "v2ray config not readable at $V2RAY_CFG" 8 60
     return
   fi
-
-  local vmess_uuid vless_uuid
-  vmess_uuid="$(jq -r '.. | objects | select(.protocol=="vmess") | .settings.clients[0].id' "$V2RAY_CFG" 2>/dev/null | head -n1)"
-  vless_uuid="$(jq -r '.. | objects | select(.protocol=="vless") | .settings.clients[0].id' "$V2RAY_CFG" 2>/dev/null | head -n1)"
+  get_v2ray_uuids
+  local vmess_uuid="$VMESS_UUID" vless_uuid="$VLESS_UUID"
 
   local choice
   choice="$(whiptail --title "Connection info" --menu "Pick a config to display + QR:" 16 70 6 \
@@ -254,27 +286,141 @@ action_sni_hunt() {
     return
   fi
   local sub
-  sub="$(whiptail --title "SNI hunter" --menu "Pick action:" 14 60 4 \
-          "hunt"        "Run a hunt (writes to /tmp/sni-hunter-tui)" \
-          "self-test"   "Run sni-hunter --self-test" \
-          "tunnel-test" "Test the tunnel surface" \
+  sub="$(whiptail --title "SNI hunter" --menu "Pick action:" 16 70 5 \
+          "hunt"        "Full hunt (auto refresh-corpus if missing)" \
+          "seed-only"   "Fast scan (~80 built-in seeds, ~2 min)" \
+          "tunnel-test" "Test ssh+vmess+vless tunnel surface (auto-UUIDs)" \
+          "self-test"   "Run sni-hunter --self-test (no network)" \
           "help"        "Show sni-hunter --help" \
           3>&1 1>&2 2>&3)" || return
   clear
   local out_dir="/tmp/sni-hunter-tui"
   mkdir -p "$out_dir"
+  get_v2ray_uuids
+  local uuid_args=()
+  [ -n "$VMESS_UUID" ] && uuid_args+=(--uuid-vmess "$VMESS_UUID")
+  [ -n "$VLESS_UUID" ] && uuid_args+=(--uuid-vless "$VLESS_UUID")
   case "$sub" in
     hunt)
-      echo "Running: bash $script hunt --out $out_dir"
+      if [ ! -s /var/lib/sni-hunter/corpus.txt ]; then
+        echo "[bootstrap] no corpus yet — running refresh-corpus first..."
+        bash "$script" refresh-corpus 2>&1 | tail -n 20
+        echo
+      fi
+      echo "Running: bash $script hunt --out $out_dir ${uuid_args[*]}"
       echo "(this can take several minutes; Ctrl-C to abort)"
       echo
-      bash "$script" hunt --out "$out_dir" 2>&1 | tail -n 400 ;;
+      bash "$script" hunt --out "$out_dir" "${uuid_args[@]}" 2>&1 | tail -n 400
+      echo; echo "=== passing.txt ==="; cat "$out_dir/passing.txt" 2>/dev/null || echo "(none)" ;;
+    seed-only)
+      echo "Running: bash $script hunt --seed-only --out $out_dir ${uuid_args[*]}"
+      echo
+      bash "$script" hunt --seed-only --out "$out_dir" "${uuid_args[@]}" 2>&1 | tail -n 200
+      echo; echo "=== passing.txt ==="; cat "$out_dir/passing.txt" 2>/dev/null || echo "(none)" ;;
+    tunnel-test)
+      echo "Running: bash $script tunnel-test ${uuid_args[*]}"
+      echo
+      bash "$script" tunnel-test "${uuid_args[@]}" 2>&1 | tail -n 200 ;;
     self-test)   bash "$script" self-test 2>&1 | tail -n 200 ;;
-    tunnel-test) bash "$script" tunnel-test 2>&1 | tail -n 200 ;;
     help)        bash "$script" --help 2>&1 | tail -n 200 ;;
   esac
   echo
   read -rp "Press Enter to return to menu..." _
+}
+
+# ----------------------------------- generate user + payload card --------
+# Creates an SSH tunnel user (with expiry) and writes a printable text card
+# to /root/cards/<user>.txt containing: credentials, HTTP-Custom payload,
+# vmess:// + vless:// share URIs, and ANSI QR codes for both.
+action_generate_card() {
+  local user pass days plan
+  user="$(whiptail --inputbox "Customer username (lowercase, no spaces):" 8 60 3>&1 1>&2 2>&3)" || return
+  [[ "$user" =~ ^[a-z][a-z0-9_-]{1,30}$ ]] || { whiptail --msgbox "Invalid username." 7 40; return; }
+  if id "$user" >/dev/null 2>&1; then
+    whiptail --yesno "User '$user' already exists. Re-issue card with EXISTING credentials?\n(Pick No to abort, then Remove first.)" 10 70 || return
+    pass=""  # cannot recover hash; warn user
+  else
+    pass="$(whiptail --passwordbox "Password (min 6 chars; will be shown on the card):" 8 60 3>&1 1>&2 2>&3)" || return
+    [ ${#pass} -ge 6 ] || { whiptail --msgbox "Password must be at least 6 chars." 7 50; return; }
+    days="$(whiptail --inputbox "Expiry in days (1-365):" 8 50 "30" 3>&1 1>&2 2>&3)" || return
+    [[ "$days" =~ ^[0-9]+$ ]] && [ "$days" -ge 1 ] && [ "$days" -le 365 ] || { whiptail --msgbox "Bad expiry." 7 40; return; }
+    plan="$(whiptail --inputbox "Plan label (free text, e.g. 'Monthly Unlimited'):" 8 60 "Monthly" 3>&1 1>&2 2>&3)" || plan="Plan"
+    useradd -m -s /bin/false "$user" || { whiptail --msgbox "useradd failed" 7 40; return; }
+    echo "${user}:${pass}" | chpasswd
+    chage -E "$(date -d "+${days} days" +%Y-%m-%d)" "$user"
+  fi
+
+  local exp_date; exp_date="$(chage -l "$user" 2>/dev/null | awk -F: '/Account expires/ {print $2}' | xargs)"
+  get_v2ray_uuids
+  local vmess_share="" vless_share="" vmess_qr="" vless_qr=""
+  if [ -n "$VMESS_UUID" ]; then
+    vmess_share="$(build_vmess_uri "$VMESS_UUID")"
+    command -v qrencode >/dev/null && vmess_qr="$(qrencode -t ANSIUTF8 -- "$vmess_share" 2>/dev/null)"
+  fi
+  if [ -n "$VLESS_UUID" ]; then
+    vless_share="$(build_vless_uri "$VLESS_UUID")"
+    command -v qrencode >/dev/null && vless_qr="$(qrencode -t ANSIUTF8 -- "$vless_share" 2>/dev/null)"
+  fi
+  local payload; payload="$(build_ssh_payload)"
+
+  install -d -m 0700 /root/cards
+  local out="/root/cards/${user}.txt"
+  {
+    echo "==============================================================="
+    echo "  TUNNEL ACCESS CARD                  ${DOMAIN}"
+    echo "==============================================================="
+    echo "  Username     : ${user}"
+    echo "  Password     : ${pass:-<unchanged — re-issue with old password>}"
+    echo "  Plan         : ${plan:-Plan}"
+    echo "  Expires      : ${exp_date:-never}"
+    echo "  Issued       : $(date -u +%Y-%m-%dT%H:%MZ)"
+    echo "---------------------------------------------------------------"
+    echo "  PROFILE 1 — SSH over WebSocket+TLS  (HTTP Custom · SSH tab)"
+    echo "---------------------------------------------------------------"
+    echo "  ip:port@user:pass  ${DOMAIN}:443@${user}:${pass:-<password>}"
+    echo "  Tick:              [Use Payload] [SSL] [Enable DNS]"
+    echo "  Untick everything else (Enhanced/SlowDns/UDP/Psiphon/V2ray)"
+    echo
+    echo "  PAYLOAD (paste exactly, [crlf] is literal):"
+    echo "  ${payload}"
+    echo "  Remote Proxy: (leave empty)"
+    echo "---------------------------------------------------------------"
+    echo "  PROFILE 2 — V2Ray VMess  (HTTP Custom · SSH tab → V2ray)"
+    echo "---------------------------------------------------------------"
+    if [ -n "$vmess_share" ]; then
+      echo "  Share URI (import or scan QR below):"
+      echo "  ${vmess_share}"
+      echo
+      [ -n "$vmess_qr" ] && printf '%s\n' "$vmess_qr"
+    else
+      echo "  (no VMess client configured in v2ray)"
+    fi
+    echo "---------------------------------------------------------------"
+    echo "  PROFILE 3 — V2Ray VLESS"
+    echo "---------------------------------------------------------------"
+    if [ -n "$vless_share" ]; then
+      echo "  Share URI (import or scan QR below):"
+      echo "  ${vless_share}"
+      echo
+      [ -n "$vless_qr" ] && printf '%s\n' "$vless_qr"
+    else
+      echo "  (no VLESS client configured in v2ray)"
+    fi
+    echo "---------------------------------------------------------------"
+    echo "  PROFILE 4 — Direct SSH (PuTTY / Termius / OpenSSH)"
+    echo "---------------------------------------------------------------"
+    echo "  Host : ${DOMAIN}    Port: 22  (or 445 dropbear, 10000 stunnel)"
+    echo "  User : ${user}      Pass: ${pass:-<password>}"
+    echo "==============================================================="
+    echo "  If your carrier blocks ${DOMAIN}, run sni-hunter on the"
+    echo "  server and replace 'Host: ${DOMAIN}' in the payload above"
+    echo "  with any SNI from passing.txt (the WS path stays the same)."
+    echo "==============================================================="
+  } > "$out"
+  chmod 0600 "$out"
+
+  show_text "Card · ${user}  →  ${out}" "$(cat "$out")"
+  whiptail --msgbox "Card saved to ${out}\n(0600, root-only)\n\nWhatsApp / email it to the customer." 10 70
 }
 
 # ----------------------------------------------------------- releases -----
@@ -300,7 +446,7 @@ main() {
 
   while true; do
     local choice
-    choice="$(whiptail --title "$TITLE" --menu "" 20 70 10 \
+    choice="$(whiptail --title "$TITLE" --menu "" 20 70 11 \
             "1" "Status & health" \
             "2" "Connection info (vmess/vless/ssh-ws + QR)" \
             "3" "SSH user management" \
@@ -308,6 +454,7 @@ main() {
             "5" "Restart a service" \
             "6" "Run SNI hunter scan" \
             "7" "SNI Hunter releases" \
+            "8" "Generate user + payload card (for customers)" \
             "0" "Exit" \
             3>&1 1>&2 2>&3)" || break
 
@@ -319,6 +466,7 @@ main() {
       5) action_restart;;
       6) action_sni_hunt;;
       7) action_releases;;
+      8) action_generate_card;;
       0|"") break;;
     esac
   done
