@@ -160,6 +160,20 @@ ${C_BOLD}HUNT OPTIONS${C_X}
                          Output: <out>/{pass-A,pass-B}/ + <out>/results.{txt,json,csv}
   --verify-tunnel      after a host passes, also confirm payload bytes actually
                          move through ssh-ws / vmess / vless endpoints
+  --auto-renew-promo   when the promo bundle drains mid-scan (PROMO_BUNDLE_*
+                         pre>0, post=0 on the same host), automatically dial
+                         the carrier's renewal USSD (PROMO_RENEW_SAFARICOM /
+                         PROMO_RENEW_AIRTEL / PROMO_RENEW_TELKOM) and re-poll
+                         the bundle. If the renewal succeeds the scan
+                         continues; otherwise the scan halts cleanly so the
+                         operator's MAIN balance isn't silently billed.
+                         Without --auto-renew-promo, exhaustion always halts
+                         the scan and prints a banner with re-subscribe
+                         instructions and a --resume command for the
+                         remaining hosts. Skipped hosts are saved to
+                         <out>/promo-skipped.txt and are NOT marked done in
+                         the checkpoint, so --resume retries them after the
+                         bundle is back.
   --out DIR            output directory                       (default: ${OUT_DIR_DEFAULT})
   --resume             continue a previous interrupted scan
   --target-ip IP       force tunnel IP (skip DNS lookup)
@@ -480,6 +494,26 @@ promo_bundle_for() {
   esac
 }
 
+# Carrier-promo RENEWAL USSD code. Dialed by --auto-renew-promo when the
+# bundle exhausts mid-scan. Defaults are intentionally EMPTY because each
+# carrier's renewal flow is menu-driven (e.g. Safaricom *544# → 1 → 1) and
+# the exact short-code varies by region/promo. Operators must opt in by
+# exporting PROMO_RENEW_<CARRIER> with the direct subscribe USSD that
+# bypasses the menu, e.g.:
+#   export PROMO_RENEW_SAFARICOM='*544*1*1#'   # buy Daily Social
+#   export PROMO_RENEW_AIRTEL='*544*2*1#'
+#   export PROMO_RENEW_TELKOM='*544*3*1#'
+# Returning empty means --auto-renew-promo will fall back to the warn+stop
+# behavior for that carrier.
+promo_renew_for() {
+  case "$1" in
+    safaricom) echo "${PROMO_RENEW_SAFARICOM-}" ;;
+    airtel)    echo "${PROMO_RENEW_AIRTEL-}"    ;;
+    telkom)    echo "${PROMO_RENEW_TELKOM-}"    ;;
+    *)         echo "" ;;
+  esac
+}
+
 # Pull a "<number> MB" / "<number> KB" / "<number> GB" balance figure from
 # arbitrary USSD-response text. Echoes KB on success, returns 1 on no match.
 parse_balance_to_kb() {
@@ -784,6 +818,45 @@ probe() {
             promo_delta=$(( pp - pa ))
             [ "$promo_delta" -lt 0 ] && promo_delta=0
           fi
+          # ---- exhaustion detection ----
+          # Bundle was non-zero pre and exactly zero post → it just drained
+          # during this transfer. Either auto-renew (if --auto-renew-promo +
+          # PROMO_RENEW_<carrier> are set and the dial succeeds) or write a
+          # sentinel file the hunt loop watches to abort the rest of the
+          # scan. Without this, every subsequent host on the same carrier
+          # would silently bill the main balance.
+          if [ -n "${PROMO_SENTINEL_FILE:-}" ] \
+               && [ "${pp:-0}" -gt 0 ] && [ "${pa:--1}" = "0" ]; then
+            local _renewed=0 _renew_code _re
+            if [ "${AUTO_RENEW_PROMO:-0}" = "1" ]; then
+              _renew_code=$(promo_renew_for "$CARRIER")
+              if [ -n "$_renew_code" ]; then
+                printf "%s[PROMO]%s %s exhausted on %s — auto-renewing via %s\n" \
+                  "$C_Y" "$C_X" "$promo_name" "$sni" "$_renew_code" >&2
+                if dial_ussd "$_renew_code"; then
+                  sleep 5
+                  _re=$(read_promo_balance_kb "RENEW $sni")
+                  if [ "${_re:-0}" -gt 0 ]; then
+                    printf "%s[PROMO]%s %s renewed (%s KB) — resuming scan\n" \
+                      "$C_G" "$C_X" "$promo_name" "$_re" >&2
+                    _renewed=1
+                  fi
+                fi
+              fi
+            fi
+            if [ "$_renewed" = "0" ]; then
+              local _reason="exhausted"
+              if [ "${AUTO_RENEW_PROMO:-0}" = "1" ]; then
+                if [ -z "$(promo_renew_for "$CARRIER")" ]; then
+                  _reason="auto-renew-requested-but-no-PROMO_RENEW_${CARRIER}-configured"
+                else
+                  _reason="auto-renew-attempted-but-failed"
+                fi
+              fi
+              printf "%s|%s|%s\n" "$sni" "$promo_name" "$_reason" \
+                > "$PROMO_SENTINEL_FILE"
+            fi
+          fi
         fi ;;
       yn)
         # Graceful fallback: one-shot y/n prompt with the transfer size.
@@ -950,6 +1023,59 @@ cmd_self_test() {
   fi
   if [ "$_saved_ps" = "__UNSET__" ]; then unset PROMO_USSD_SAFARICOM
   else PROMO_USSD_SAFARICOM="$_saved_ps"; fi
+
+  # ---- promo_renew_for: empty by default, env override honored ----------
+  echo
+  echo "${C_BOLD}promo_renew_for${C_X}"
+  prcheck() {
+    local exp="$1" carrier="$2" got
+    got=$(promo_renew_for "$carrier")
+    if [ "$got" = "$exp" ]; then
+      printf "  ${C_G}ok${C_X}    %-10s -> '%s'\n" "$carrier" "$got"
+    else
+      printf "  ${C_R}FAIL${C_X}  %-10s -> '%s' (want '%s')\n" "$carrier" "$got" "$exp"
+      fails=$((fails+1))
+    fi
+  }
+  local _saved_rs="${PROMO_RENEW_SAFARICOM-__UNSET__}"
+  unset PROMO_RENEW_SAFARICOM PROMO_RENEW_AIRTEL PROMO_RENEW_TELKOM
+  prcheck "" safaricom
+  prcheck "" airtel
+  prcheck "" telkom
+  prcheck "" unknown
+  PROMO_RENEW_SAFARICOM='*544*1*1#'
+  prcheck '*544*1*1#' safaricom
+  if [ "$_saved_rs" = "__UNSET__" ]; then unset PROMO_RENEW_SAFARICOM
+  else PROMO_RENEW_SAFARICOM="$_saved_rs"; fi
+
+  # ---- regression guards: exhaustion plumbing must not silently regress -
+  echo
+  echo "${C_BOLD}promo-bundle exhaustion plumbing${C_X}"
+  local _src; _src=$(awk '/^cmd_hunt\(\) \{/{p=1} p && /^cmd_[a-z_]+\(\) \{/ && !/^cmd_hunt\(\) \{/{p=0} p' "$0")
+  guard() {
+    local desc="$1" pat="$2"
+    if echo "$_src" | grep -qE "$pat"; then
+      printf "  ${C_G}ok${C_X}    %s\n" "$desc"
+    else
+      printf "  ${C_R}FAIL${C_X}  %s (no match for /%s/)\n" "$desc" "$pat"
+      fails=$((fails+1))
+    fi
+  }
+  guard "cmd_hunt parses --auto-renew-promo"          '\-\-auto-renew-promo'
+  guard "cmd_hunt sets PROMO_SENTINEL_FILE"           'PROMO_SENTINEL_FILE='
+  guard "cmd_hunt exports PROMO_SENTINEL_FILE"        'export PROMO_SENTINEL_FILE'
+  guard "xargs wrapper checks sentinel before probe"  '\[ -f "\$PROMO_SENTINEL_FILE" \]'
+  guard "post-loop emits PROMO BUNDLE EXHAUSTED"      'PROMO BUNDLE EXHAUSTED'
+  guard "skipped hosts saved to promo-skipped.txt"    'promo-skipped\.txt'
+  local _psrc; _psrc=$(awk '/^probe\(\) \{/{p=1; next} p && /^[a-z_]+\(\) \{/{p=0} p' "$0")
+  if echo "$_psrc" | grep -q 'PROMO_SENTINEL_FILE' \
+       && echo "$_psrc" | grep -q 'AUTO_RENEW_PROMO' \
+       && echo "$_psrc" | grep -q 'promo_renew_for'; then
+    printf "  ${C_G}ok${C_X}    probe() handles exhaustion (sentinel + auto-renew)\n"
+  else
+    printf "  ${C_R}FAIL${C_X}  probe() missing exhaustion handling\n"
+    fails=$((fails+1))
+  fi
 
   # ---- tunnel-test framing constants — guard against silent breakage ----
   echo
@@ -1258,6 +1384,7 @@ cmd_hunt() {
       --accessibility) USSD_RESPONSE_FILE="$2"; shift 2;;
       --radio-tag)     RADIO_TAG="$2"; shift 2;;
       --verify-tunnel) VERIFY_TUNNEL=1; export VERIFY_TUNNEL; shift;;
+      --auto-renew-promo) AUTO_RENEW_PROMO=1; shift;;
       --out)           out_dir="$2"; shift 2;;
       --resume)        resume=1; shift;;
       --target-ip)     TARGET_IP="$2"; shift 2;;
@@ -1326,6 +1453,10 @@ cmd_hunt() {
     grep -vxF -f "$checkpoint" "$cand_file" > "${cand_file}.todo"
   else
     : > "$pass_file"; : > "$checkpoint"
+    # Fresh run: clear any stale promo-skipped list from a prior aborted
+    # scan in this same out_dir so the post-loop banner counts only this
+    # run's skips.
+    : > "${out_dir}/promo-skipped.txt"
     cp "$cand_file" "${cand_file}.todo"
   fi
 
@@ -1370,11 +1501,21 @@ EOF
   export RADIO_TAG LATENCY_SAMPLES SKIP_THRU HAVE_TERMUX_API INTERACTIVE
   export VERIFY_TUNNEL VMESS_PATH VLESS_PATH UUID_VMESS UUID_VLESS
   export AUTO_USSD HAVE_ROOT HAVE_UIAUTOMATOR USSD_RESPONSE_FILE PROMPT_CHARGE
+  # Promo-bundle exhaustion sentinel: probe() writes here when the promo
+  # bundle drains mid-scan (and auto-renew didn't recover). The xargs
+  # wrapper checks this file before each host and aborts the rest of the
+  # scan so we don't silently bill the operator's main balance.
+  PROMO_SENTINEL_FILE="${out_dir}/.promo-exhausted"
+  rm -f "$PROMO_SENTINEL_FILE"
+  export PROMO_SENTINEL_FILE AUTO_RENEW_PROMO
+  export PROMO_RENEW_SAFARICOM PROMO_RENEW_AIRTEL PROMO_RENEW_TELKOM
+  export PROMO_USSD_SAFARICOM PROMO_USSD_AIRTEL PROMO_USSD_TELKOM
   export -f probe ws_probe_via_ip classify_family classify_tier
   export -f network_type_now read_balance_kb ussd_code_for
   export -f tunnel_test_one _tunnel_py
   export -f read_balance_auto read_balance_accessibility parse_balance_to_kb
   export -f prompt_charge_yn dial_ussd select_balance_backend
+  export -f promo_bundle_for promo_renew_for read_promo_balance_kb
 
   local started; started=$(date +%s); local n=0
   ( while [ ! -f "${out_dir}/.done" ]; do
@@ -1388,6 +1529,14 @@ EOF
 
   while IFS= read -r host; do [ -z "$host" ] || echo "$host"; done < "${cand_file}.todo" | \
     xargs -n1 -P "$CONCURRENCY" -I{} bash -c '
+      # Promo-bundle abort guard: if a previous host drained the bundle and
+      # no auto-renew recovered it, skip every remaining host on this
+      # carrier. We deliberately do NOT add to the checkpoint so a future
+      # --resume after re-subscribing will retry these hosts.
+      if [ -n "${PROMO_SENTINEL_FILE:-}" ] && [ -f "$PROMO_SENTINEL_FILE" ]; then
+        echo "$1" >> "'"${out_dir}/promo-skipped.txt"'"
+        exit 0
+      fi
       out=$(probe "$1") && echo "$out" >> "'"$pass_file"'"
       echo "$1" >> "'"$checkpoint"'"
     ' _ {}
@@ -1396,6 +1545,39 @@ EOF
   printf "\n"
 
   format_outputs "$out_dir" "$pass_file"
+
+  # Promo-bundle exhaustion banner. Surfaces *why* the scan stopped early
+  # and what the operator should do next (re-subscribe or set
+  # PROMO_RENEW_<carrier> + --auto-renew-promo). This is the user-visible
+  # half of the abort: without it the operator would see fewer pass
+  # results and assume the corpus was bad.
+  if [ -f "$PROMO_SENTINEL_FILE" ]; then
+    local _ex_sni _ex_name _ex_reason _skipped=0 _promo_entry _promo_code
+    IFS='|' read -r _ex_sni _ex_name _ex_reason < "$PROMO_SENTINEL_FILE"
+    [ -f "${out_dir}/promo-skipped.txt" ] && \
+      _skipped=$(wc -l < "${out_dir}/promo-skipped.txt")
+    _promo_entry=$(promo_bundle_for "$CARRIER")
+    _promo_code="${_promo_entry%%:*}"
+    cat >&2 <<EOF
+${C_Y}${C_BOLD}═══════════════════════════════════════════════════════════════${C_X}
+  ${C_Y}${C_BOLD}PROMO BUNDLE EXHAUSTED — SCAN PAUSED${C_X}
+  Carrier        : ${CARRIER}
+  Bundle         : ${_ex_name} (balance USSD ${_promo_code})
+  Drained on     : ${_ex_sni}
+  Reason         : ${_ex_reason}
+  Hosts skipped  : ${_skipped}  (saved to ${out_dir}/promo-skipped.txt)
+
+  Continuing would silently bill your MAIN balance for every remaining
+  host. Re-subscribe to ${_ex_name}, then resume with:
+
+    $0 hunt --carrier ${CARRIER} --resume --out ${out_dir}
+
+  Or, on the next run, export PROMO_RENEW_${CARRIER} (the carrier's
+  direct-subscribe USSD that bypasses the menu) and pass
+  --auto-renew-promo so future drains are renewed automatically.
+${C_Y}${C_BOLD}═══════════════════════════════════════════════════════════════${C_X}
+EOF
+  fi
 
   # --verify-tunnel post-scan: re-confirm the tunnel still works through the
   # single best passing host. Catches regressions (carrier blocked it mid-scan)
