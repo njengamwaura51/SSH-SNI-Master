@@ -146,6 +146,13 @@ ${C_BOLD}HUNT OPTIONS${C_X}
                          service: dial_ussd is invoked, then we wait for a
                          fresh line to be appended and read it
   --radio-tag NAME     label this run's radio type (LTE, UMTS, NR, ...)
+  --two-pass           run scan, auto-toggle the phone radio (LTE↔3G), scan
+                         again, then merge into one report. Hosts that pass
+                         on only one radio are tagged NETWORK_TYPE_SPECIFIC.
+                         Uses 'settings put global preferred_network_mode'
+                         when root is available; otherwise opens the network-
+                         mode settings panel and prompts the operator.
+                         Output: <out>/{pass-A,pass-B}/ + <out>/results.{txt,json,csv}
   --verify-tunnel      after a host passes, also confirm payload bytes actually
                          move through ssh-ws / vmess / vless endpoints
   --out DIR            output directory                       (default: ${OUT_DIR_DEFAULT})
@@ -168,6 +175,9 @@ ${C_BOLD}TUNNEL-TEST${C_X}  prove bytes actually flow through each endpoint
   succeeds and the connection is held open after garbage write.
 
 ${C_BOLD}TWO-RADIO WORKFLOW${C_X} (find 3G-only / 4G-only hosts)
+  Automatic (one command — recommended):
+    ./sni-hunter.sh hunt --two-pass --carrier safaricom --out ~/run-2p
+  Manual (when --two-pass cannot toggle the radio for you):
   1) lock phone to LTE → ./sni-hunter.sh hunt --radio-tag LTE  --out ~/run-lte
   2) lock phone to 3G  → ./sni-hunter.sh hunt --radio-tag UMTS --out ~/run-3g
   3) ./sni-hunter.sh merge-runs ~/run-lte ~/run-3g ~/run-merged
@@ -325,6 +335,110 @@ network_type_now() {
   else
     echo "unknown"
   fi
+}
+
+# =============================================================================
+#  RADIO TOGGLE  —  switch the device between LTE-only and 3G-only so a
+#  two-pass hunt can identify hosts that only work on one radio type
+#  (NETWORK_TYPE_SPECIFIC). Strategy:
+#    1) root present  : settings put global preferred_network_mode <N>
+#                       then svc data off/on to force telephony to re-read
+#    2) Termux/Android: open the network-mode settings panel via intent and
+#                       prompt the human operator to flip it
+#    3) otherwise     : fail (caller must run the manual two-radio workflow)
+#  preferred_network_mode constants (Android frameworks/base):
+#     2  = WCDMA only (3G-only)
+#    11  = LTE only (4G-only)
+#     9  = LTE / CDMA / EvDo / GSM / WCDMA (system default "auto")
+# =============================================================================
+radio_mode_to_int() {
+  case "$1" in
+    3g|3G|umts|UMTS|wcdma|WCDMA) echo 2 ;;
+    4g|4G|lte|LTE)               echo 11 ;;
+    auto|AUTO|"")                 echo 9 ;;
+    *)                            echo 9 ;;
+  esac
+}
+
+# Regex matching the network_type_now() values we expect to see once the
+# radio has actually settled into the requested mode. Used by wait_for_radio.
+radio_mode_expected_type() {
+  case "$1" in
+    3g|3G|umts|UMTS|wcdma|WCDMA) echo 'UMTS|HSPA|HSPAP|HSDPA|HSUPA|EDGE|EVDO[^ ]*|CDMA' ;;
+    4g|4G|lte|LTE)               echo 'LTE|LTE_CA|LTE-CA|NR_NSA' ;;
+    *)                            echo '.*' ;;
+  esac
+}
+
+# Echo the saved preferred_network_mode so we can restore it later.
+get_preferred_network_mode() {
+  local v=""
+  if [ "$HAVE_ROOT" = "1" ]; then
+    v=$(su -c 'settings get global preferred_network_mode' </dev/null 2>/dev/null \
+          | grep -oE '[0-9]+' | head -n1)
+  fi
+  [ -z "$v" ] && v=$(settings get global preferred_network_mode 2>/dev/null \
+          | grep -oE '[0-9]+' | head -n1)
+  echo "$v"
+}
+
+# Switch the device to the requested radio mode. Returns 0 on success.
+# Args: <mode-token>  (3g | 4g | auto)
+set_radio_mode() {
+  local mode="$1" target
+  target=$(radio_mode_to_int "$mode")
+  if [ "$HAVE_ROOT" = "1" ]; then
+    su -c "settings put global preferred_network_mode ${target}" \
+      </dev/null >/dev/null 2>&1 || return 1
+    # Bounce mobile data so telephony re-reads the preference. Best-effort —
+    # most Android builds accept svc data without root, but if it fails the
+    # setting still takes effect on the next reattach.
+    su -c "svc data disable" </dev/null >/dev/null 2>&1 || true
+    sleep 2
+    su -c "svc data enable" </dev/null >/dev/null 2>&1 || true
+    return 0
+  fi
+  # Non-root fallback: open the network-mode panel and prompt the operator.
+  if command -v am >/dev/null 2>&1 && { [ -e /dev/tty ] || [ -t 0 ]; }; then
+    am start -a android.settings.NETWORK_OPERATOR_SETTINGS \
+      >/dev/null 2>&1 || true
+    local pretty
+    case "$mode" in 3g|3G|umts|UMTS) pretty="3G-only (WCDMA)" ;;
+                    4g|4G|lte|LTE)   pretty="4G-only (LTE)"   ;;
+                    *)               pretty="$mode"            ;; esac
+    printf "%s[RADIO]%s switch the phone to %s in the panel that just opened, then press ENTER…" \
+      "$C_Y" "$C_X" "$pretty" >&2
+    if [ -e /dev/tty ]; then read -r _ < /dev/tty || return 1
+    else                      read -r _            || return 1
+    fi
+    return 0
+  fi
+  return 1
+}
+
+# Block until network_type_now() reports a value matching the expected
+# pattern for the given mode, up to ${2:-30} seconds. Returns 0 on match.
+wait_for_radio() {
+  local mode="$1" budget="${2:-30}" expected nt waited=0
+  expected=$(radio_mode_expected_type "$mode")
+  while [ "$waited" -lt "$budget" ]; do
+    nt=$(network_type_now)
+    if echo "$nt" | grep -qE "^(${expected})$"; then return 0; fi
+    sleep 2; waited=$((waited+2))
+  done
+  return 1
+}
+
+# Pick the opposite radio for a second pass given the current network type.
+# Echoes "3g" or "4g". Defaults to 3g when current is unknown so we still
+# exercise something different.
+opposite_radio() {
+  local cur="$1"
+  case "$cur" in
+    LTE*|LTE_CA|LTE-CA|NR*|4G*) echo "3g" ;;
+    UMTS|HSPA*|HSDPA|HSUPA|EDGE|EVDO*|CDMA|3G*) echo "4g" ;;
+    *) echo "3g" ;;
+  esac
 }
 
 # =============================================================================
@@ -842,6 +956,77 @@ PY
       fails=$((fails+1))
     fi
   }
+  # ---- radio-toggle helpers ----
+  echo
+  echo "${C_BOLD}radio toggle helpers${C_X}"
+  rcheck() {
+    local exp="$1" got="$2" desc="$3"
+    if [ "$got" = "$exp" ]; then
+      printf "  ${C_G}ok${C_X}    %-40s -> %s\n" "$desc" "$got"
+    else
+      printf "  ${C_R}FAIL${C_X}  %-40s -> %s (want %s)\n" "$desc" "$got" "$exp"
+      fails=$((fails+1))
+    fi
+  }
+  rcheck 2  "$(radio_mode_to_int 3g)"   "radio_mode_to_int 3g"
+  rcheck 11 "$(radio_mode_to_int 4g)"   "radio_mode_to_int 4g"
+  rcheck 11 "$(radio_mode_to_int LTE)"  "radio_mode_to_int LTE"
+  rcheck 2  "$(radio_mode_to_int UMTS)" "radio_mode_to_int UMTS"
+  rcheck 9  "$(radio_mode_to_int auto)" "radio_mode_to_int auto"
+  rcheck "3g" "$(opposite_radio LTE)"   "opposite_radio LTE -> 3g"
+  rcheck "4g" "$(opposite_radio UMTS)"  "opposite_radio UMTS -> 4g"
+  rcheck "4g" "$(opposite_radio HSPA)"  "opposite_radio HSPA -> 4g"
+  rcheck "3g" "$(opposite_radio unknown)" "opposite_radio unknown -> 3g (default)"
+  # expected_type regexes must actually match the canonical net_type values
+  if echo "LTE" | grep -qE "^($(radio_mode_expected_type 4g))$"; then
+    printf "  ${C_G}ok${C_X}    expected_type 4g matches 'LTE'\n"
+  else
+    printf "  ${C_R}FAIL${C_X}  expected_type 4g does not match 'LTE'\n"; fails=$((fails+1))
+  fi
+  if echo "HSPAP" | grep -qE "^($(radio_mode_expected_type 3g))$"; then
+    printf "  ${C_G}ok${C_X}    expected_type 3g matches 'HSPAP'\n"
+  else
+    printf "  ${C_R}FAIL${C_X}  expected_type 3g does not match 'HSPAP'\n"; fails=$((fails+1))
+  fi
+
+  # cmd_hunt must dispatch --two-pass to cmd_hunt_two_pass before any work
+  if awk '/^cmd_hunt\(\) \{/{p=1} p && /^cmd_[a-z_]+\(\) \{/ && !/^cmd_hunt\(\) \{/{p=0} p' "$0" \
+       | grep -q 'cmd_hunt_two_pass'; then
+    printf "  ${C_G}ok${C_X}    cmd_hunt dispatches --two-pass to orchestrator\n"
+  else
+    printf "  ${C_R}FAIL${C_X}  cmd_hunt missing --two-pass dispatch\n"; fails=$((fails+1))
+  fi
+
+  # format_outputs must emit a per-radio breakdown (task contract)
+  if awk '/^format_outputs\(\) \{/{p=1; next} p && /^[a-z_]+\(\) \{/{p=0} p' "$0" \
+       | grep -q 'Pass counts by radio type'; then
+    printf "  ${C_G}ok${C_X}    format_outputs emits per-radio breakdown\n"
+  else
+    printf "  ${C_R}FAIL${C_X}  format_outputs missing per-radio breakdown\n"; fails=$((fails+1))
+  fi
+
+  # End-to-end: synthesize a tiny CSV with mixed radios + tiers and verify
+  # the per-radio breakdown lines appear in the resulting txt report.
+  local _tmpdir _tmpcsv
+  _tmpdir=$(mktemp -d); _tmpcsv="${_tmpdir}/results.csv"
+  cat >"$_tmpcsv" <<'CSV'
+UNLIMITED_FREE|a.example.com|40|3|45.0|0|0|LTE|OTHER|101|-1|-1
+NETWORK_TYPE_SPECIFIC|b.example.com|55|4|22.0|0|0|UMTS|OTHER|101|-1|-1
+CAPPED_20M|c.example.com|60|5|20.0|0|0|LTE|OTHER|101|-1|-1
+CSV
+  ( CARRIER=test format_outputs "$_tmpdir" "$_tmpcsv" >/dev/null 2>&1 ) || true
+  if grep -q "Pass counts by radio type" "$_tmpdir/results.txt" 2>/dev/null \
+     && grep -qE "^#\s+[0-9]+\s+LTE"  "$_tmpdir/results.txt" \
+     && grep -qE "^#\s+[0-9]+\s+UMTS" "$_tmpdir/results.txt"; then
+    printf "  ${C_G}ok${C_X}    results.txt contains per-radio breakdown (LTE + UMTS)\n"
+  else
+    printf "  ${C_R}FAIL${C_X}  results.txt missing per-radio breakdown lines\n"
+    fails=$((fails+1))
+  fi
+  rm -rf "$_tmpdir"
+
+  echo
+  echo "${C_BOLD}parse_balance_to_kb${C_X}"
   pcheck "251392"  "Your data balance is 245.50 MB valid till tomorrow"
   pcheck "1572864" '<node text="Bundle: 1.5 GB remaining"/>'
   pcheck "150"     "150 KB left"
@@ -919,6 +1104,17 @@ PY
 #  HUNT
 # =============================================================================
 cmd_hunt() {
+  # --two-pass dispatches to the auto-toggle orchestrator BEFORE the normal
+  # single-pass scan begins. The orchestrator re-invokes this script for each
+  # pass with --radio-tag set, then merges the two runs into NETWORK_TYPE_SPECIFIC.
+  local _arg
+  for _arg in "$@"; do
+    if [ "$_arg" = "--two-pass" ]; then
+      cmd_hunt_two_pass "$@"
+      return $?
+    fi
+  done
+
   local seed_only=0 limit="" out_dir="$OUT_DIR_DEFAULT" resume=0
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -1090,6 +1286,87 @@ EOF
 }
 
 # =============================================================================
+#  HUNT --two-pass  →  scan, toggle radio, scan again, merge automatically.
+#  Orchestrates two cmd_hunt invocations as separate processes (re-using the
+#  full single-pass logic) and then folds them into one report via merge-runs.
+#  Args: original argv from cmd_hunt (still includes --two-pass).
+# =============================================================================
+cmd_hunt_two_pass() {
+  local out_dir="$OUT_DIR_DEFAULT"
+  local -a rest=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --two-pass)  shift ;;
+      --out)       out_dir="$2"; shift 2 ;;
+      --radio-tag) shift 2 ;;   # ignore: we set this per pass
+      --carrier|--limit|--accessibility|--target-ip|--concurrency)
+                   rest+=("$1" "$2"); shift 2 ;;
+      *)           rest+=("$1"); shift ;;
+    esac
+  done
+  install -d "$out_dir"
+
+  local orig_mode current other_mode
+  orig_mode=$(get_preferred_network_mode)
+  current=$(network_type_now)
+  other_mode=$(opposite_radio "$current")
+
+  cat >&2 <<EOF
+${C_BOLD}${C_C}═══════════════════════════════════════════════════════════════${C_X}
+  ${C_BOLD}TWO-PASS HUNT${C_X}
+  Pass A radio       : ${current}
+  Pass B radio       : ${other_mode}-only (toggled via $( [ "$HAVE_ROOT" = "1" ] && echo "settings put preferred_network_mode" || echo "settings panel intent + prompt" ))
+  Saved orig mode    : ${orig_mode:-unknown}
+  Output             : ${out_dir}/{pass-A,pass-B}  →  ${out_dir}/results.{txt,json,csv}
+${C_BOLD}${C_C}═══════════════════════════════════════════════════════════════${C_X}
+EOF
+
+  log "${C_BOLD}pass A${C_X}: scanning on radio=${current}"
+  if ! "$0" hunt "${rest[@]}" --radio-tag "$current" --out "${out_dir}/pass-A" >&2; then
+    warn "pass A returned non-zero — proceeding with whatever it produced"
+  fi
+
+  log "${C_BOLD}toggling radio${C_X} → ${other_mode}-only"
+  if ! set_radio_mode "$other_mode"; then
+    warn "could not toggle radio automatically — falling back to manual two-radio workflow"
+    warn "see: $0 --help (TWO-RADIO WORKFLOW section) and merge with: $0 merge-runs <A> <B> <OUT>"
+    return 1
+  fi
+  if wait_for_radio "$other_mode" 60; then
+    log "radio settled on $(network_type_now)"
+  else
+    warn "wait_for_radio timed out after 60s; current=$(network_type_now). Proceeding anyway."
+  fi
+
+  local b_tag; b_tag=$(network_type_now)
+  log "${C_BOLD}pass B${C_X}: scanning on radio=${b_tag}"
+  if ! "$0" hunt "${rest[@]}" --radio-tag "$b_tag" --out "${out_dir}/pass-B" >&2; then
+    warn "pass B returned non-zero — merge will use whatever it produced"
+  fi
+
+  # Restore the operator's original radio preference so the phone is left in
+  # the state we found it. Best-effort: only meaningful when we have root and
+  # actually saw an integer mode at the start.
+  if [ -n "$orig_mode" ] && [ "$HAVE_ROOT" = "1" ]; then
+    log "restoring preferred_network_mode=${orig_mode}"
+    su -c "settings put global preferred_network_mode ${orig_mode}" \
+      </dev/null >/dev/null 2>&1 || warn "could not restore preferred_network_mode"
+    su -c "svc data disable" </dev/null >/dev/null 2>&1 || true
+    sleep 2
+    su -c "svc data enable"  </dev/null >/dev/null 2>&1 || true
+  else
+    warn "leaving radio on '${other_mode}-only' — please reset it manually if desired"
+  fi
+
+  if [ -s "${out_dir}/pass-A/results.csv" ] && [ -s "${out_dir}/pass-B/results.csv" ]; then
+    cmd_merge_runs "${out_dir}/pass-A" "${out_dir}/pass-B" "${out_dir}"
+  else
+    warn "one or both passes produced no results.csv — skipping merge"
+    return 1
+  fi
+}
+
+# =============================================================================
 #  MERGE-RUNS  →  tag NETWORK_TYPE_SPECIFIC
 # =============================================================================
 cmd_merge_runs() {
@@ -1178,6 +1455,31 @@ format_outputs() {
   }'
   printf "\n${C_BOLD}=== Pass counts by tier ===${C_X}\n"
   cut -d'|' -f1 "$sort_csv" | sort | uniq -c | sort -rn | awk '{printf "  %5d  %s\n",$1,$2}'
+
+  # Per-radio-type breakdown — required by the two-pass / NETWORK_TYPE_SPECIFIC
+  # workflow so the operator can see how many hosts passed on LTE vs UMTS, and
+  # how the NETWORK_TYPE_SPECIFIC tier splits across radios.
+  printf "\n${C_BOLD}=== Pass counts by radio type ===${C_X}\n"
+  cut -d'|' -f8 "$sort_csv" | sort | uniq -c | sort -rn \
+    | awk '{printf "  %5d  %s\n",$1,$2}'
+  printf "\n${C_BOLD}=== Tier × radio matrix ===${C_X}\n"
+  awk -F'|' '{n=$8; if(n=="") n="unknown"; key=$1"|"n; c[key]++}
+       END{for(k in c){split(k,a,"|"); printf "  %5d  %-22s  %s\n", c[k], a[1], a[2]}}' \
+    "$sort_csv" | sort -k1,1nr
+
+  # Append the same breakdowns to the canonical text report so cron/CI can
+  # diff them across runs without re-parsing the CSV.
+  {
+    printf "\n# Pass counts by tier\n"
+    cut -d'|' -f1 "$sort_csv" | sort | uniq -c | sort -rn | awk '{printf "#  %5d  %s\n",$1,$2}'
+    printf "\n# Pass counts by radio type\n"
+    cut -d'|' -f8 "$sort_csv" | sort | uniq -c | sort -rn \
+      | awk '{printf "#  %5d  %s\n",$1,$2}'
+    printf "\n# Tier x radio matrix\n"
+    awk -F'|' '{n=$8; if(n=="") n="unknown"; key=$1"|"n; c[key]++}
+         END{for(k in c){split(k,a,"|"); printf "#  %5d  %-22s  %s\n", c[k], a[1], a[2]}}' \
+      "$sort_csv" | sort -k2,2nr
+  } >> "$txt"
 
   rm -f "$sort_csv"
 }
