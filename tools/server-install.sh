@@ -284,6 +284,19 @@ EOF
   systemctl reload nginx
 }
 
+# --------------------------------------------- TUI launcher install (whiptail)
+install_tui() {
+  log "Installing TUI deps (whiptail, jq, qrencode)"
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq whiptail jq qrencode >/dev/null
+  local src dst
+  src="$(dirname "$0")/tunnel-tui.sh"
+  dst="/usr/local/bin/tunnel-tui"
+  [ -f "$src" ] || die "missing tools/tunnel-tui.sh (re-pull the repo)"
+  log "Installing $dst"
+  install -m 0755 "$src" "$dst"
+  log "Launch the panel with: sudo tunnel-tui"
+}
+
 # --------------------------------------------------------- public commands --
 cmd_install() {
   require_root
@@ -298,6 +311,7 @@ cmd_install() {
   install_bundle
   install_systemd
   install_nginx_snippet
+  install_tui
 
   hdr "Smoke test"
   local url="https://${DOMAIN}${PREFIX}/api/releases"
@@ -384,8 +398,9 @@ set -- "${POSITIONAL[@]:-}"
 case "${SUB}" in
   install)        cmd_install;;
   check|status)   cmd_check;;
+  tui|panel)      exec /usr/local/bin/tunnel-tui;;
   add-release)    cmd_add_release;;
   uninstall)      cmd_uninstall;;
   -h|--help|help) usage;;
-  *)              die "unknown sub-command: ${SUB} (try: install | check | add-release | uninstall)";;
+  *)              die "unknown sub-command: ${SUB} (try: install | check | add-release | tui | uninstall)";;
 esac

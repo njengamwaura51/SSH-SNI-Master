@@ -1,0 +1,312 @@
+#!/usr/bin/env bash
+# tools/tunnel-tui.sh — whiptail-based control panel for the tunnel server.
+# Designed to run over SSH on the Digital Ocean droplet that hosts
+# shopthelook.page + the v2ray/ssh/dropbear/stunnel4/ws-ssh tunnel stack.
+#
+# Launch:
+#   sudo tunnel-tui              (after `server-install.sh install` symlinks it)
+#   sudo bash tools/tunnel-tui.sh
+#
+# Required: whiptail (Ubuntu: `apt install whiptail`), jq, qrencode.
+# server-install.sh installs all three.
+
+set -uo pipefail
+
+# --------------------------------------------------------------- constants --
+DOMAIN="${TUNNEL_DOMAIN:-shopthelook.page}"
+V2RAY_CFG="${V2RAY_CFG:-/usr/local/etc/v2ray/config.json}"
+RELEASES_DIR="${RELEASES_DIR:-/var/www/sni-hunter/releases}"
+NGINX_ACCESS_LOG="${NGINX_ACCESS_LOG:-/var/log/nginx/access.log}"
+NGINX_ERROR_LOG="${NGINX_ERROR_LOG:-/var/log/nginx/error.log}"
+AUTH_LOG="${AUTH_LOG:-/var/log/auth.log}"
+V2RAY_LOG="${V2RAY_LOG:-/var/log/v2ray/access.log}"
+
+# WS path conventions from the existing nginx config.
+WS_BRIDGE_PATH="/ws-bridge-x9k2"
+VMESS_PATH="/vmess-x9k2"
+VLESS_PATH="/vless-x9k2"
+
+TITLE="Tunnel Control Panel  ·  ${DOMAIN}"
+
+# ---------------------------------------------------------------- helpers --
+need_root() {
+  if [ "$(id -u)" -ne 0 ]; then
+    whiptail --title "Permission" --msgbox "This panel needs root. Re-run with sudo." 8 50
+    exit 1
+  fi
+}
+
+need_cmd() {
+  for c in "$@"; do
+    command -v "$c" >/dev/null 2>&1 || {
+      echo "Missing required command: $c" >&2
+      echo "Install with: apt install -y whiptail jq qrencode" >&2
+      exit 1
+    }
+  done
+}
+
+is_active() { systemctl is-active --quiet "$1" 2>/dev/null; }
+
+# Render text in $1 inside a scrollable textbox; auto-sized.
+show_text() {
+  local title="$1" body="$2"
+  local tmp; tmp="$(mktemp)"
+  printf '%s\n' "$body" > "$tmp"
+  whiptail --title "$title" --scrolltext --textbox "$tmp" 24 90
+  rm -f "$tmp"
+}
+
+# ------------------------------------------------------------ status pane --
+action_status() {
+  local out=""
+  out+="=== Service status ===\n"
+  for svc in nginx ssh dropbear stunnel4 v2ray ws-ssh sni-hunter-api openvpn; do
+    if is_active "$svc"; then
+      out+=$(printf '  %-16s : active\n' "$svc")$'\n'
+    elif systemctl list-unit-files 2>/dev/null | grep -q "^${svc}\.service"; then
+      out+=$(printf '  %-16s : INACTIVE\n' "$svc")$'\n'
+    else
+      out+=$(printf '  %-16s : not installed\n' "$svc")$'\n'
+    fi
+  done
+
+  out+="\n=== Listening sockets ===\n"
+  out+="$(ss -tlnp 2>/dev/null | awk 'NR==1 || /:(22|443|445|8090|8888|10000|10001)\s/' | sed 's/^/  /')\n"
+
+  out+="\n=== Active SSH sessions ===\n"
+  if command -v who >/dev/null; then
+    out+="$(who | sed 's/^/  /')\n"
+  fi
+  out+="  (also dropbear via :445 / stunnel via :10000-10001)\n"
+
+  out+="\n=== Disk / memory ===\n"
+  out+="$(df -h / | sed 's/^/  /')\n"
+  out+="$(free -h | sed 's/^/  /')\n"
+
+  out+="\n=== Public reachability ===\n"
+  out+="  https://${DOMAIN}/                 → HTTP $(curl -sk -o /dev/null -w '%{http_code}' "https://${DOMAIN}/")\n"
+  out+="  https://${DOMAIN}/sni-hunter/api/releases → HTTP $(curl -sk -o /dev/null -w '%{http_code}' "https://${DOMAIN}/sni-hunter/api/releases")\n"
+
+  show_text "Status & health" "$out"
+}
+
+# ----------------------------------------------------- connection info pane
+# Pulls UUIDs from /usr/local/etc/v2ray/config.json. Builds vmess:// and
+# vless:// share URIs and renders a QR for the chosen one.
+action_connection() {
+  if [ ! -r "$V2RAY_CFG" ]; then
+    whiptail --msgbox "v2ray config not readable at $V2RAY_CFG" 8 60
+    return
+  fi
+
+  local vmess_uuid vless_uuid
+  vmess_uuid="$(jq -r '.. | objects | select(.protocol=="vmess") | .settings.clients[0].id' "$V2RAY_CFG" 2>/dev/null | head -n1)"
+  vless_uuid="$(jq -r '.. | objects | select(.protocol=="vless") | .settings.clients[0].id' "$V2RAY_CFG" 2>/dev/null | head -n1)"
+
+  local choice
+  choice="$(whiptail --title "Connection info" --menu "Pick a config to display + QR:" 16 70 6 \
+              "vmess"  "VMess over WS+TLS  (UUID: ${vmess_uuid:-<none>})" \
+              "vless"  "VLESS over WS+TLS  (UUID: ${vless_uuid:-<none>})" \
+              "ssh-ws" "SSH over WS bridge ${WS_BRIDGE_PATH}" \
+              "raw"    "Raw connection details (no QR)" \
+              3>&1 1>&2 2>&3)" || return
+
+  local body="" share=""
+  case "$choice" in
+    vmess)
+      [ -n "$vmess_uuid" ] || { whiptail --msgbox "No VMess client found in v2ray config." 8 50; return; }
+      local v_json
+      v_json="$(jq -nc --arg add "$DOMAIN" --arg id "$vmess_uuid" --arg path "$VMESS_PATH" \
+        '{v:"2",ps:"tunnel",add:$add,port:"443",id:$id,aid:"0",scy:"auto",net:"ws",type:"none",host:$add,path:$path,tls:"tls",sni:$add}')"
+      share="vmess://$(printf '%s' "$v_json" | base64 -w0)"
+      body="VMess (v2rayN / v2rayNG / Nekoray):\n  Address : ${DOMAIN}\n  Port    : 443\n  UUID    : ${vmess_uuid}\n  AlterId : 0\n  Network : ws\n  Path    : ${VMESS_PATH}\n  Host    : ${DOMAIN}\n  TLS     : on (SNI=${DOMAIN})\n\nShare URI:\n${share}\n";;
+    vless)
+      [ -n "$vless_uuid" ] || { whiptail --msgbox "No VLESS client found in v2ray config." 8 50; return; }
+      share="vless://${vless_uuid}@${DOMAIN}:443?encryption=none&security=tls&sni=${DOMAIN}&type=ws&host=${DOMAIN}&path=$(printf '%s' "$VLESS_PATH" | jq -sRr @uri)#tunnel"
+      body="VLESS (v2rayN / v2rayNG / Nekoray):\n  Address    : ${DOMAIN}\n  Port       : 443\n  UUID       : ${vless_uuid}\n  Network    : ws\n  Path       : ${VLESS_PATH}\n  Host       : ${DOMAIN}\n  TLS        : on (SNI=${DOMAIN})\n  Encryption : none\n\nShare URI:\n${share}\n";;
+    ssh-ws)
+      body="SSH over WebSocket bridge\n  Outer URL  : wss://${DOMAIN}${WS_BRIDGE_PATH}\n  Inner SSH  : 127.0.0.1:22 (handled by ws-ssh-bridge.py)\n  Use with   : HTTP-Injector / KPN-Tunnel / NPV-Tunnel custom payload\n\nExample payload (HTTP/1.1 GET upgrade):\n  GET ${WS_BRIDGE_PATH} HTTP/1.1[crlf]Host: ${DOMAIN}[crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]\n\nDirect SSH-over-TLS alternatives on this server:\n  stunnel  : ${DOMAIN}:10000 → ssh:22\n  stunnel  : ${DOMAIN}:10001 → dropbear:445\n  dropbear : ${DOMAIN}:445   (plain)\n";;
+    raw)
+      body="Raw tunnel surface for ${DOMAIN}\n\n  ssh           tcp/22\n  dropbear      tcp/445\n  stunnel→ssh   tcp/10000  (TLS-wrapped)\n  stunnel→dbr   tcp/10001  (TLS-wrapped)\n  v2ray vmess   wss/443${VMESS_PATH}\n  v2ray vless   wss/443${VLESS_PATH}\n  ws-ssh        wss/443${WS_BRIDGE_PATH}\n  https         tcp/443    (nginx terminates TLS for shopthelook.page)\n\nVMess UUID : ${vmess_uuid:-<none>}\nVLESS UUID : ${vless_uuid:-<none>}\n";;
+  esac
+
+  if [ -n "$share" ] && command -v qrencode >/dev/null; then
+    local qr; qr="$(qrencode -t ANSIUTF8 -- "$share" 2>/dev/null || true)"
+    body="${body}\n${qr}"
+  fi
+
+  show_text "Connection · ${choice}" "$(printf '%b' "$body")"
+}
+
+# ---------------------------------------------------- ssh user management --
+action_users() {
+  local sub
+  sub="$(whiptail --title "SSH users" --menu "Pick action:" 14 60 4 \
+          "list"   "List tunnel users + expiry dates" \
+          "add"    "Add a new SSH/dropbear user (with expiry)" \
+          "remove" "Remove an SSH user" \
+          "passwd" "Reset password for a user" \
+          3>&1 1>&2 2>&3)" || return
+
+  case "$sub" in
+    list)
+      local body="UID/Login/Expiry (only normal users with /home dirs)\n\n"
+      while IFS=: read -r u _ uid _ _ home shell; do
+        [ "$uid" -ge 1000 ] || continue
+        [ "$uid" -lt 65000 ] || continue
+        [ -d "$home" ] || continue
+        local exp; exp="$(chage -l "$u" 2>/dev/null | awk -F: '/Account expires/ {print $2}' | xargs)"
+        body+=$(printf '  %-20s uid=%-5s expiry=%s shell=%s\n' "$u" "$uid" "${exp:-never}" "$shell")$'\n'
+      done < /etc/passwd
+      show_text "SSH users" "$body";;
+    add)
+      local user pass days
+      user="$(whiptail --inputbox "New username (lowercase, no spaces):" 8 50 3>&1 1>&2 2>&3)" || return
+      [[ "$user" =~ ^[a-z][a-z0-9_-]{1,30}$ ]] || { whiptail --msgbox "Invalid username." 7 40; return; }
+      id "$user" >/dev/null 2>&1 && { whiptail --msgbox "User '$user' already exists." 7 50; return; }
+      pass="$(whiptail --passwordbox "Password for $user:" 8 50 3>&1 1>&2 2>&3)" || return
+      [ ${#pass} -ge 6 ] || { whiptail --msgbox "Password must be at least 6 chars." 7 50; return; }
+      days="$(whiptail --inputbox "Expire in how many days? (1-365, blank=never)" 8 50 "30" 3>&1 1>&2 2>&3)" || return
+      useradd -m -s /bin/false "$user" || { whiptail --msgbox "useradd failed" 7 40; return; }
+      echo "${user}:${pass}" | chpasswd
+      if [ -n "$days" ] && [[ "$days" =~ ^[0-9]+$ ]] && [ "$days" -gt 0 ] && [ "$days" -le 365 ]; then
+        local exp_date; exp_date="$(date -d "+${days} days" +%Y-%m-%d)"
+        chage -E "$exp_date" "$user"
+        whiptail --msgbox "User '$user' created. Expires ${exp_date}.\nShell is /bin/false (tunnel-only).\nWorks for ssh:22, dropbear:445, stunnel:10000-10001." 11 70
+      else
+        whiptail --msgbox "User '$user' created with no expiry.\nShell is /bin/false (tunnel-only)." 9 60
+      fi;;
+    remove)
+      local user
+      user="$(whiptail --inputbox "Username to remove:" 8 50 3>&1 1>&2 2>&3)" || return
+      id "$user" >/dev/null 2>&1 || { whiptail --msgbox "No such user." 7 40; return; }
+      local uid; uid="$(id -u "$user")"
+      [ "$uid" -ge 1000 ] || { whiptail --msgbox "Refusing to remove system user (uid=$uid)." 7 60; return; }
+      whiptail --yesno "Really delete '$user' and their home directory?" 8 60 || return
+      pkill -KILL -u "$user" 2>/dev/null || true
+      userdel -r "$user" 2>/dev/null && whiptail --msgbox "Deleted '$user'." 7 40 || whiptail --msgbox "userdel failed." 7 40;;
+    passwd)
+      local user pass
+      user="$(whiptail --inputbox "Username:" 8 50 3>&1 1>&2 2>&3)" || return
+      id "$user" >/dev/null 2>&1 || { whiptail --msgbox "No such user." 7 40; return; }
+      pass="$(whiptail --passwordbox "New password for $user:" 8 50 3>&1 1>&2 2>&3)" || return
+      [ ${#pass} -ge 6 ] || { whiptail --msgbox "Password must be at least 6 chars." 7 50; return; }
+      echo "${user}:${pass}" | chpasswd && whiptail --msgbox "Password updated for '$user'." 7 50;;
+  esac
+}
+
+# ----------------------------------------------------------- log viewer ---
+action_logs() {
+  local choice
+  choice="$(whiptail --title "Live logs (Ctrl-C to quit tail)" --menu "Pick a log:" 16 60 6 \
+          "nginx-access" "$NGINX_ACCESS_LOG" \
+          "nginx-error"  "$NGINX_ERROR_LOG" \
+          "auth"         "$AUTH_LOG (ssh/sudo)" \
+          "v2ray"        "$V2RAY_LOG" \
+          "sni-api"      "journalctl -u sni-hunter-api" \
+          "ws-ssh"       "journalctl -u ws-ssh" \
+          3>&1 1>&2 2>&3)" || return
+
+  clear
+  case "$choice" in
+    nginx-access) tail -F "$NGINX_ACCESS_LOG" 2>/dev/null;;
+    nginx-error)  tail -F "$NGINX_ERROR_LOG"  2>/dev/null;;
+    auth)         tail -F "$AUTH_LOG"         2>/dev/null;;
+    v2ray)        tail -F "$V2RAY_LOG"        2>/dev/null;;
+    sni-api)      journalctl -u sni-hunter-api -f --no-pager;;
+    ws-ssh)       journalctl -u ws-ssh        -f --no-pager;;
+  esac
+  echo; read -rp "Press Enter to return to menu..." _
+}
+
+# ------------------------------------------------------- restart services -
+action_restart() {
+  local svc
+  svc="$(whiptail --title "Restart a service" --menu "Pick service:" 16 50 7 \
+          "nginx"          "" \
+          "ssh"            "" \
+          "dropbear"       "" \
+          "stunnel4"       "" \
+          "v2ray"          "" \
+          "ws-ssh"         "" \
+          "sni-hunter-api" "" \
+          3>&1 1>&2 2>&3)" || return
+
+  whiptail --yesno "Restart '$svc' now?" 7 50 || return
+  if systemctl restart "$svc" 2>&1; then
+    sleep 1
+    if is_active "$svc"; then
+      whiptail --msgbox "$svc restarted and active." 7 50
+    else
+      whiptail --msgbox "$svc restarted but is NOT active.\nCheck: journalctl -u $svc -n 30" 9 60
+    fi
+  else
+    whiptail --msgbox "Restart failed for $svc." 7 40
+  fi
+}
+
+# ---------------------------------------------------------- sni hunter ----
+action_sni_hunt() {
+  local script="/opt/sni-hunter-src/tools/sni-hunter.sh"
+  if [ ! -x "$script" ] && [ ! -f "$script" ]; then
+    whiptail --msgbox "SNI hunter script not found at $script.\nPull the repo or pass via SNI_HUNTER_SCRIPT env var." 9 60
+    return
+  fi
+  clear
+  echo "Running SNI hunter (this may take a few minutes)..."
+  echo "Output goes to /tmp/sni-hunter-tui.csv"
+  bash "$script" --output /tmp/sni-hunter-tui.csv 2>&1 | tail -n 200
+  echo
+  read -rp "Press Enter to return to menu..." _
+}
+
+# ----------------------------------------------------------- releases -----
+action_releases() {
+  local body=""
+  if [ -d "$RELEASES_DIR" ]; then
+    body+="Releases on disk (${RELEASES_DIR}):\n"
+    body+="$(ls -lh "$RELEASES_DIR" 2>/dev/null | sed 's/^/  /')\n"
+  else
+    body+="(no releases directory at ${RELEASES_DIR})\n"
+  fi
+  body+="\nManifest from API:\n"
+  body+="$(curl -sk "https://${DOMAIN}/sni-hunter/api/releases" | sed 's/^/  /')\n"
+  show_text "Releases" "$body"
+}
+
+# --------------------------------------------------------------- main loop
+main() {
+  need_cmd whiptail
+  need_root
+  command -v jq       >/dev/null || whiptail --msgbox "jq not installed — connection-info UUIDs will not parse.\nInstall: apt install -y jq" 9 60
+  command -v qrencode >/dev/null || true   # QR is optional; degrade silently
+
+  while true; do
+    local choice
+    choice="$(whiptail --title "$TITLE" --menu "" 20 70 10 \
+            "1" "Status & health" \
+            "2" "Connection info (vmess/vless/ssh-ws + QR)" \
+            "3" "SSH user management" \
+            "4" "Live logs" \
+            "5" "Restart a service" \
+            "6" "Run SNI hunter scan" \
+            "7" "SNI Hunter releases" \
+            "0" "Exit" \
+            3>&1 1>&2 2>&3)" || break
+
+    case "$choice" in
+      1) action_status;;
+      2) action_connection;;
+      3) action_users;;
+      4) action_logs;;
+      5) action_restart;;
+      6) action_sni_hunt;;
+      7) action_releases;;
+      0|"") break;;
+    esac
+  done
+  clear
+}
+
+main
