@@ -1,0 +1,63 @@
+root@ubuntu-s-2vcpu-2gb-90gb-intel-ams3:~# sudo bash -c 'set -euo pipefail; \
+  cd /opt/sni-hunter-src && git fetch --all --prune && git reset --hard origin/main; \
+  bash tools/server-install.sh install --domain shopthelook.page && \
+  bash tools/server-install.sh check'
+remote: Enumerating objects: 12, done.
+remote: Counting objects: 100% (12/12), done.
+remote: Compressing objects: 100% (4/4), done.
+remote: Total 8 (delta 4), reused 8 (delta 4), pack-reused 0 (from 0)
+Unpacking objects: 100% (8/8), 3.43 KiB | 878.00 KiB/s, done.
+From https://github.com/njengamwaura51/SSH-SNI-Master
+   53dc647..987b1dd  main       -> origin/main
+HEAD is now at 987b1dd Update installer to automatically detect nginx configuration and fix websocket probe
+
+=== SNI Hunter installer ===
+  ➜ Domain         : shopthelook.page
+  ➜ Local port     : 8090
+  ➜ Public prefix  : https://shopthelook.page/sni-hunter
+  ➜ Releases dir   : /var/www/sni-hunter/releases
+
+=== Existing tunnel stack (read-only probe) ===
+  nginx        : active
+  ssh          : active
+  dropbear     : active
+  stunnel4     : active
+  v2ray        : active
+  ws-ssh       : active
+  openvpn      : not installed
+
+=== Listening sockets ===
+State  Recv-Q Send-Q Local Address:Port  Peer Address:PortProcess                                                                        
+LISTEN 0      4096         0.0.0.0:22         0.0.0.0:*    users:(("sshd",pid=7740,fd=3),("systemd",pid=1,fd=154))                       
+LISTEN 0      4096       127.0.0.1:10001      0.0.0.0:*    users:(("v2ray",pid=6378,fd=6))                                               
+LISTEN 0      4096       127.0.0.1:10000      0.0.0.0:*    users:(("v2ray",pid=6378,fd=3))                                               
+LISTEN 0      100        127.0.0.1:8888       0.0.0.0:*    users:(("python3",pid=7602,fd=6))                                             
+LISTEN 0      4096         0.0.0.0:445        0.0.0.0:*    users:(("stunnel4",pid=6219,fd=9))                                            
+LISTEN 0      511          0.0.0.0:443        0.0.0.0:*    users:(("nginx",pid=6403,fd=7),("nginx",pid=6402,fd=7),("nginx",pid=868,fd=7))
+LISTEN 0      4096            [::]:22            [::]:*    users:(("sshd",pid=7740,fd=4),("systemd",pid=1,fd=155))                       
+LISTEN 0      511             [::]:443           [::]:*    users:(("nginx",pid=6403,fd=8),("nginx",pid=6402,fd=8),("nginx",pid=868,fd=8))
+
+=== WebSocket handshakes (expect HTTP/1.1 101) ===
+  /ws-bridge-x9k2                → HTTP 426
+  /vmess-x9k2                    → HTTP 404
+  /vless-x9k2                    → HTTP 404
+  /sni-hunter/api/releases       → HTTP 200
+
+=== Website reachability ===
+  shopthelook.page → HTTP 200
+  ➜ Node.js v20.20.2 already present
+  ➜ Copying pre-built api-server from repo (artifacts/api-server/dist)
+  ➜ Writing /etc/systemd/system/sni-hunter-api.service
+  ✘ service did not start; journalctl -u sni-hunter-api -n 50
+root@ubuntu-s-2vcpu-2gb-90gb-intel-ams3:~# sudo bash -c 'set -euo pipefail; \
+  SITE=$(grep -rlE "server_name[[:space:]]+([^;]*[[:space:]])?shopthelook\.page([[:space:]]|;)" \
+           /etc/nginx/sites-enabled /etc/nginx/conf.d 2>/dev/null | head -n1); \
+  echo "Detected vhost: $SITE"; \
+  test -f "$SITE" || { echo "no vhost found — listing:"; ls -la /etc/nginx/sites-enabled/ /etc/nginx/conf.d/; exit 1; }; \
+  NGINX_SITE_OVERRIDE="$SITE" bash /opt/sni-hunter-src/tools/server-install.sh install --domain shopthelook.page && \
+  bash /opt/sni-hunter-src/tools/server-install.sh check'
+root@ubuntu-s-2vcpu-2gb-90gb-intel-ams3:~# === Smoke test ===
+  ➜ https://shopthelook.page/sni-hunter/api/releases → HTTP 200
+===: command not found
+➜: command not found
+root@ubuntu-s-2vcpu-2gb-90gb-intel-ams3:~# 
