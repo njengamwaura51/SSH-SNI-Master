@@ -328,6 +328,30 @@ action_sni_hunt() {
   read -rp "Press Enter to return to menu..." _
 }
 
+# ----------------------------------------- update from GitHub ------------
+action_update() {
+  clear
+  echo "=== Pulling latest from GitHub and redeploying (idempotent) ==="
+  echo
+  bash /opt/sni-hunter-src/tools/server-install.sh update 2>&1 | tail -n 200
+  echo
+  echo "------------------------------------------------------------------"
+  echo "  Done. EXIT and re-launch  sudo tunnel-tui  to load any new TUI"
+  echo "  code. Service restarts (sni-hunter-api / nginx) already done."
+  echo "------------------------------------------------------------------"
+  read -rp "Press Enter to return..." _
+}
+
+# ------------------------------------------ run hardening pass -----------
+action_harden() {
+  whiptail --yesno \
+"Run the hardening pass?\n\nWill install / configure:\n  - unattended-upgrades (security patches)\n  - ufw (default deny + allow 22/80/443/445/10000/10001)\n  - fail2ban (sshd + nginx jails)\n  - sysctl (BBR + syncookies + martians)\n  - sshd hardening drop-in (LoginGrace, MaxAuth, ClientAlive)\n  - 'tunnel' group + per-user limits.conf caps\n\nSafe to re-run. Will NOT disable password auth or root login\n(those are manual opt-in steps to avoid lock-outs)." 20 72 || return
+  clear
+  bash /opt/sni-hunter-src/tools/server-harden.sh 2>&1 | tail -n 400
+  echo
+  read -rp "Press Enter to return..." _
+}
+
 # ----------------------------------- generate user + payload card --------
 # Creates an SSH tunnel user (with expiry) and writes a printable text card
 # to /root/cards/<user>.txt containing: credentials, HTTP-Custom payload,
@@ -446,27 +470,31 @@ main() {
 
   while true; do
     local choice
-    choice="$(whiptail --title "$TITLE" --menu "" 20 70 11 \
-            "1" "Status & health" \
-            "2" "Connection info (vmess/vless/ssh-ws + QR)" \
-            "3" "SSH user management" \
-            "4" "Live logs" \
-            "5" "Restart a service" \
-            "6" "Run SNI hunter scan" \
-            "7" "SNI Hunter releases" \
-            "8" "Generate user + payload card (for customers)" \
-            "0" "Exit" \
+    choice="$(whiptail --title "$TITLE" --menu "" 22 72 13 \
+            "1"  "Status & health" \
+            "2"  "Connection info (vmess/vless/ssh-ws + QR)" \
+            "3"  "SSH user management" \
+            "4"  "Live logs" \
+            "5"  "Restart a service" \
+            "6"  "Run SNI hunter scan" \
+            "7"  "SNI Hunter releases" \
+            "8"  "Generate user + payload card (for customers)" \
+            "9"  "Update from GitHub (git pull + redeploy)" \
+            "10" "Run hardening pass (ufw + fail2ban + sysctl + sshd)" \
+            "0"  "Exit" \
             3>&1 1>&2 2>&3)" || break
 
     case "$choice" in
-      1) action_status;;
-      2) action_connection;;
-      3) action_users;;
-      4) action_logs;;
-      5) action_restart;;
-      6) action_sni_hunt;;
-      7) action_releases;;
-      8) action_generate_card;;
+      1)  action_status;;
+      2)  action_connection;;
+      3)  action_users;;
+      4)  action_logs;;
+      5)  action_restart;;
+      6)  action_sni_hunt;;
+      7)  action_releases;;
+      8)  action_generate_card;;
+      9)  action_update;;
+      10) action_harden;;
       0|"") break;;
     esac
   done

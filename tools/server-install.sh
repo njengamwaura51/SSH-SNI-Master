@@ -297,6 +297,32 @@ install_tui() {
   log "Launch the panel with: sudo tunnel-tui"
 }
 
+# ----------------------------------------------------- update + harden ------
+cmd_update() {
+  hdr "Pulling latest from GitHub"
+  cd /opt/sni-hunter-src 2>/dev/null || die "no /opt/sni-hunter-src — run \`install\` first"
+  git fetch --all --prune
+  local before after
+  before="$(git rev-parse HEAD)"
+  git reset --hard origin/main
+  after="$(git rev-parse HEAD)"
+  if [ "$before" = "$after" ]; then
+    log "Already up to date ($before)."
+  else
+    log "Updated $before → $after"
+    git --no-pager log --oneline "$before..$after" | sed "s/^/    /"
+  fi
+  hdr "Re-running install to redeploy changed components (idempotent)"
+  exec bash "$0" install
+}
+
+cmd_harden() {
+  local script
+  script="$(dirname "$0")/server-harden.sh"
+  [ -f "$script" ] || die "missing tools/server-harden.sh (re-pull the repo)"
+  exec bash "$script"
+}
+
 # --------------------------------------------------------- public commands --
 cmd_install() {
   require_root
@@ -399,8 +425,10 @@ case "${SUB}" in
   install)        cmd_install;;
   check|status)   cmd_check;;
   tui|panel)      exec /usr/local/bin/tunnel-tui;;
+  update)         cmd_update;;
+  harden)         cmd_harden;;
   add-release)    cmd_add_release;;
   uninstall)      cmd_uninstall;;
   -h|--help|help) usage;;
-  *)              die "unknown sub-command: ${SUB} (try: install | check | add-release | tui | uninstall)";;
+  *)              die "unknown sub-command: ${SUB} (try: install | update | harden | check | add-release | tui | uninstall)";;
 esac
