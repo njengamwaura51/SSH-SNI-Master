@@ -1,0 +1,251 @@
+root@ubuntu-s-2vcpu-2gb-90gb-intel-ams3:~# sudo bash -c '
+echo "═══════════════════════════════════════════════════════"
+echo "1. Why sni-hunter-api is inactive"
+echo "═══════════════════════════════════════════════════════"
+systemctl status sni-hunter-api --no-pager -l | head -25 || true
+echo
+echo "─── last 40 lines of journal ───"
+journalctl -u sni-hunter-api -n 40 --no-pager || true
+echo
+echo "─── files installed ───"
+ls -l /opt/sni-hunter/ /var/www/sni-hunter/releases/ 2>&1 | head -20
+echo
+echo "─── manual launch test (3s timeout) ───"
+timeout 3 node /opt/sni-hunter/releases-server.mjs 2>&1 | head -10 || true
+
+echo
+echo "═══════════════════════════════════════════════════════"
+echo "2. Nginx vhost layout"
+echo "═══════════════════════════════════════════════════════"
+echo "─── sites-enabled/ ───"
+ls -la /etc/nginx/sites-enabled/ 2>&1
+echo "─── conf.d/ ───"
+ls -la /etc/nginx/conf.d/ 2>&1
+echo
+echo "─── files mentioning shopthelook ───"
+grep -rln "shopthelook" /etc/nginx/ 2>/dev/null
+echo
+echo "─── files including sni-hunter snippet ───"
+grep -rln "sni-hunter" /etc/nginx/ 2>/dev/null
+echo
+echo "─── /etc/nginx/snippets/sni-hunter.conf ───"
+cat /etc/nginx/snippets/sni-hunter.conf 2>&1 || echo "(missing)"
+
+echo
+echo "═══════════════════════════════════════════════════════"
+echo "3. Live nginx config — does sni-hunter actually load?"
+echo "═══════════════════════════════════════════════════════"
+nginx -T 2>/dev/null | grep -B2 -A8 "sni-hunter" || echo "  ✘ NO sni-hunter blocks loaded into running nginx"
+echo
+'url -s -o /dev/null -w "  127.0.0.1:8090/healthz → HTTP %{http_code}\n" http://127.0.0.1:8090/healthz/{if (buf ~ /shoptheloo
+═══════════════════════════════════════════════════════
+1. Why sni-hunter-api is inactive
+═══════════════════════════════════════════════════════
+○ sni-hunter-api.service - SNI Hunter download/release api-server
+     Loaded: loaded (/etc/systemd/system/sni-hunter-api.service; enabled; preset: enabled)
+     Active: inactive (dead) since Wed 2026-04-22 22:03:20 UTC; 20min ago
+   Duration: 273ms
+    Process: 17065 ExecStart=/usr/bin/node /opt/sni-hunter/dist/index.mjs (code=dumped, signal=TRAP)
+   Main PID: 17065 (code=dumped, signal=TRAP)
+        CPU: 71ms
+
+Apr 22 22:03:20 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 systemd[1]: sni-hunter-api.service: Scheduled restart job, restart counter is at 111.
+Apr 22 22:03:20 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 systemd[1]: sni-hunter-api.service: Start request repeated too quickly.
+Apr 22 22:03:20 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 systemd[1]: sni-hunter-api.service: Failed with result 'core-dump'.
+Apr 22 22:03:20 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 systemd[1]: Failed to start sni-hunter-api.service - SNI Hunter download/release api-server.
+
+─── last 40 lines of journal ───
+Apr 22 22:03:15 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 node[16880]: 21: 0x195e476  [/usr/bin/node]
+Apr 22 22:03:15 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 systemd[1]: sni-hunter-api.service: Main process exited, code=dumped, status=5/TRAP
+Apr 22 22:03:15 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 systemd[1]: sni-hunter-api.service: Failed with result 'core-dump'.
+Apr 22 22:03:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 systemd[1]: sni-hunter-api.service: Scheduled restart job, restart counter is at 110.
+Apr 22 22:03:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 systemd[1]: Started sni-hunter-api.service - SNI Hunter download/release api-server.
+Apr 22 22:03:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 node[17065]: #
+Apr 22 22:03:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 node[17065]: # Fatal error in , line 0
+Apr 22 22:03:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 node[17065]: # Check failed: 12 == (*__errno_location ()).
+Apr 22 22:03:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 node[17065]: #
+Apr 22 22:03:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 node[17065]: #
+Apr 22 22:03:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 node[17065]: #
+Apr 22 22:03:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 node[17065]: #FailureMessage Object: 0x7ffd934c6ac0
+Apr 22 22:03:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 node[17065]: ----- Native stack trace -----
+Apr 22 22:03:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 node[17065]:  1: 0xd32b41  [/usr/bin/node]
+Apr 22 22:03:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 node[17065]:  2: 0x214a881 V8_Fatal(char const*, ...) [/usr/bin/node]
+Apr 22 22:03:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 node[17065]:  3: 0x21556a7 v8::base::OS::SetPermissions(void*, unsigned long, v8::base::OS::MemoryPermission) [/usr/bin/node]
+Apr 22 22:03:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 node[17065]:  4: 0x1163eba v8::internal::MemoryAllocator::SetPermissionsOnExecutableMemoryChunk(v8::internal::VirtualMemory*, unsigned long, unsigned long, unsigned long) [/usr/bin/node]
+Apr 22 22:03:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 node[17065]:  5: 0x116416e v8::internal::MemoryAllocator::AllocateAlignedMemory(unsigned long, unsigned long, unsigned long, v8::internal::AllocationSpace, v8::internal::Executability, void*, v8::internal::VirtualMemory*) [/usr/bin/node]
+Apr 22 22:03:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 node[17065]:  6: 0x11643e4 v8::internal::MemoryAllocator::AllocateUninitializedChunkAt(v8::internal::BaseSpace*, unsigned long, v8::internal::Executability, unsigned long, v8::internal::PageSize) [/usr/bin/node]
+Apr 22 22:03:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 node[17065]:  7: 0x1164b0b v8::internal::MemoryAllocator::AllocatePage(v8::internal::MemoryAllocator::AllocationMode, v8::internal::Space*, v8::internal::Executability) [/usr/bin/node]
+Apr 22 22:03:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 node[17065]:  8: 0x11799dc v8::internal::PagedSpaceBase::TryExpandImpl() [/usr/bin/node]
+Apr 22 22:03:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 node[17065]:  9: 0x117c404  [/usr/bin/node]
+Apr 22 22:03:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 node[17065]: 10: 0x117c9b2 v8::internal::PagedSpaceBase::RefillLabMain(int, v8::internal::AllocationOrigin) [/usr/bin/node]
+Apr 22 22:03:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 node[17065]: 11: 0x10e8ed5 v8::internal::HeapAllocator::AllocateRawWithLightRetrySlowPath(int, v8::internal::AllocationType, v8::internal::AllocationOrigin, v8::internal::AllocationAlignment) [/usr/bin/node]
+Apr 22 22:03:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 node[17065]: 12: 0x10c5d15 v8::internal::Factory::CodeBuilder::AllocateInstructionStream(bool) [/usr/bin/node]
+Apr 22 22:03:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 node[17065]: 13: 0x10c60ec v8::internal::Factory::CodeBuilder::BuildInternal(bool) [/usr/bin/node]
+Apr 22 22:03:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 node[17065]: 14: 0xf3d5d7 v8::internal::baseline::BaselineCompiler::Build(v8::internal::LocalIsolate*) [/usr/bin/node]
+Apr 22 22:03:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 node[17065]: 15: 0xf4d785 v8::internal::GenerateBaselineCode(v8::internal::Isolate*, v8::internal::Handle<v8::internal::SharedFunctionInfo>) [/usr/bin/node]
+Apr 22 22:03:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 node[17065]: 16: 0xfa9adb v8::internal::Compiler::CompileSharedWithBaseline(v8::internal::Isolate*, v8::internal::Handle<v8::internal::SharedFunctionInfo>, v8::internal::Compiler::ClearExceptionFlag, v8::internal::IsCompiledScope*) [/usr/bin/node]
+Apr 22 22:03:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 node[17065]: 17: 0xfaa02d v8::internal::Compiler::CompileBaseline(v8::internal::Isolate*, v8::internal::Handle<v8::internal::JSFunction>, v8::internal::Compiler::ClearExceptionFlag, v8::internal::IsCompiledScope*) [/usr/bin/node]
+Apr 22 22:03:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 node[17065]: 18: 0xf3bd48 v8::internal::baseline::BaselineBatchCompiler::CompileBatch(v8::internal::Handle<v8::internal::JSFunction>) [/usr/bin/node]
+Apr 22 22:03:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 node[17065]: 19: 0xfb5610 v8::internal::Compiler::Compile(v8::internal::Isolate*, v8::internal::Handle<v8::internal::JSFunction>, v8::internal::Compiler::ClearExceptionFlag, v8::internal::IsCompiledScope*) [/usr/bin/node]
+Apr 22 22:03:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 node[17065]: 20: 0x151a71a v8::internal::Runtime_CompileLazy(int, unsigned long*, v8::internal::Isolate*) [/usr/bin/node]
+Apr 22 22:03:17 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 node[17065]: 21: 0x195e476  [/usr/bin/node]
+Apr 22 22:03:18 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 systemd[1]: sni-hunter-api.service: Main process exited, code=dumped, status=5/TRAP
+Apr 22 22:03:18 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 systemd[1]: sni-hunter-api.service: Failed with result 'core-dump'.
+Apr 22 22:03:20 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 systemd[1]: sni-hunter-api.service: Scheduled restart job, restart counter is at 111.
+Apr 22 22:03:20 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 systemd[1]: sni-hunter-api.service: Start request repeated too quickly.
+Apr 22 22:03:20 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 systemd[1]: sni-hunter-api.service: Failed with result 'core-dump'.
+Apr 22 22:03:20 ubuntu-s-2vcpu-2gb-90gb-intel-ams3 systemd[1]: Failed to start sni-hunter-api.service - SNI Hunter download/release api-server.
+
+─── files installed ───
+/opt/sni-hunter/:
+total 8
+drwxr-xr-x 2 root root 4096 Apr 22 21:58 dist
+-rw-r--r-- 1 root root  920 Apr 22 22:03 package.json
+
+/var/www/sni-hunter/releases/:
+total 1028
+-rw-r--r-- 1 www-data www-data 1048576 Apr 22 22:17 SNIHunter-0.0.1-smoketest.AppImage
+-rw-r--r-- 1 www-data www-data      65 Apr 22 22:17 SNIHunter-0.0.1-smoketest.AppImage.sha256
+
+─── manual launch test (3s timeout) ───
+node:internal/modules/cjs/loader:1210
+  throw err;
+  ^
+
+Error: Cannot find module '/opt/sni-hunter/releases-server.mjs'
+    at Module._resolveFilename (node:internal/modules/cjs/loader:1207:15)
+    at Module._load (node:internal/modules/cjs/loader:1038:27)
+    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:164:12)
+    at node:internal/main/run_main_module:28:49 {
+  code: 'MODULE_NOT_FOUND',
+
+═══════════════════════════════════════════════════════
+2. Nginx vhost layout
+═══════════════════════════════════════════════════════
+─── sites-enabled/ ───
+total 8
+drwxr-xr-x 2 root root 4096 Apr 21 12:38 .
+drwxr-xr-x 8 root root 4096 Apr 21 11:14 ..
+lrwxrwxrwx 1 root root   38 Apr 21 12:38 shopthelook -> /etc/nginx/sites-available/shopthelook
+─── conf.d/ ───
+total 8
+drwxr-xr-x 2 root root 4096 Feb  9 14:03 .
+drwxr-xr-x 8 root root 4096 Apr 21 11:14 ..
+
+─── files mentioning shopthelook ───
+/etc/nginx/sites-available/archive/shopthelook.backup.1776768210
+/etc/nginx/sites-available/archive/shopthelook.page
+/etc/nginx/sites-available/archive/shopthelook.backup.1776768347
+/etc/nginx/sites-available/archive/shopthelook.backup.1776768518
+/etc/nginx/sites-available/shopthelook
+
+─── files including sni-hunter snippet ───
+
+─── /etc/nginx/snippets/sni-hunter.conf ───
+cat: /etc/nginx/snippets/sni-hunter.conf: No such file or directory
+(missing)
+
+═══════════════════════════════════════════════════════
+3. Live nginx config — does sni-hunter actually load?
+═══════════════════════════════════════════════════════
+  ✘ NO sni-hunter blocks loaded into running nginx
+
+─── server blocks for shopthelook on port 443 ───
+--- server block #2 ---
+server {
+    listen 443 ssl http2 default_server;
+    listen [::]:443 ssl http2 default_server;
+    server_name shopthelook.page www.shopthelook.page;
+    include /etc/nginx/snippets/tunnel-locations.conf;
+
+    ssl_certificate     /etc/letsencrypt/live/shopthelook.page/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/shopthelook.page/privkey.pem;
+    include             /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam         /etc/letsencrypt/ssl-dhparams.pem;
+
+    # Static SPA
+    root /home/velour/velour/artifacts/fashion/dist/public;
+    index index.html;
+    client_max_body_size 25m;
+
+    # Long-cache hashed assets
+    location ~* \.(?:js|css|woff2?|ttf|eot|otf|svg|png|jpe?g|webp|gif|ico|map)$ {
+        try_files $uri =404;
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+        access_log off;
+    }
+
+    # SPA fallback
+    location / {
+        try_files $uri $uri/ /index.html;
+        add_header Cache-Control "no-cache";
+    }
+
+    # API -> velour-api on :8080
+    location /api/ {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade           $http_upgrade;
+        proxy_set_header Connection        $connection_upgrade;
+        proxy_read_timeout 120s;
+    }
+
+    # Hidden SSH-over-WS tunnel (keep your existing setup)
+}
+--- server block #2 ---
+server {
+    listen 443 ssl http2 default_server;
+    listen [::]:443 ssl http2 default_server;
+    server_name shopthelook.page www.shopthelook.page;
+    include /etc/nginx/snippets/tunnel-locations.conf;
+
+    ssl_certificate     /etc/letsencrypt/live/shopthelook.page/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/shopthelook.page/privkey.pem;
+    include             /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam         /etc/letsencrypt/ssl-dhparams.pem;
+
+    # Static SPA
+    root /home/velour/velour/artifacts/fashion/dist/public;
+    index index.html;
+    client_max_body_size 25m;
+
+    # Long-cache hashed assets
+    location ~* \.(?:js|css|woff2?|ttf|eot|otf|svg|png|jpe?g|webp|gif|ico|map)$ {
+        try_files $uri =404;
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+        access_log off;
+    }
+
+    # SPA fallback
+    location / {
+        try_files $uri $uri/ /index.html;
+        add_header Cache-Control "no-cache";
+    }
+
+    # API -> velour-api on :8080
+    location /api/ {
+        proxy_pass http://127.0.0.1:8080;
+
+═══════════════════════════════════════════════════════
+4. What request actually hits
+═══════════════════════════════════════════════════════
+HTTP/2 200 
+server: nginx/1.24.0 (Ubuntu)
+date: Wed, 22 Apr 2026 22:23:51 GMT
+content-type: text/html
+content-length: 2388
+last-modified: Wed, 22 Apr 2026 17:20:46 GMT
+etag: "69e9036e-954"
+cache-control: no-cache
+accept-ranges: bytes
+
+
+─── direct hit on the Node port (should be 200 if service alive) ───
+  127.0.0.1:8090/healthz → HTTP 000
+root@ubuntu-s-2vcpu-2gb-90gb-intel-ams3:~# 
