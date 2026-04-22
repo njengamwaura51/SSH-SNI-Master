@@ -105,6 +105,53 @@ export type ScanEvent =
   | { type: "done"; code: number }
   | { type: "error"; message: string };
 
+// ---------------------------------------------------------------------------
+// `check --json` deep-probe schema (sni-hunter.sh:2230-2252).
+// This is *different* from the streaming HostRecord above — it's emitted by a
+// one-shot deep probe, and it includes a nested `tunnel` block when
+// `--verify-tunnel` is on. Field names from the bash side use `cert_subject`
+// and `promo_bundle`, which the adapter in lib/hunter.ts maps onto our
+// flat HostRecord conventions (`cert_subj`, `promo_name`).
+export interface TunnelEndpointResult {
+  status: string; // "PASS" | "FAIL" | "SKIP" | other
+  mode?: string;
+  bytes_in?: number;
+  bytes_out?: number;
+  elapsed_ms?: number;
+  error?: string;
+  reason?: string;
+  raw?: string;
+}
+
+export interface TunnelBlobResult {
+  status: string;
+  bytes_in: number;
+  mbps: number;
+}
+
+export interface TunnelBreakdown {
+  ssh?: TunnelEndpointResult;
+  vmess?: TunnelEndpointResult;
+  vless?: TunnelEndpointResult;
+  blob?: TunnelBlobResult;
+  // When python3 is missing on the host, hunter emits {error, hint}.
+  error?: string;
+  hint?: string;
+}
+
+// Result of `check <sni> --json [--verify-tunnel]`. The `record` field is a
+// flat HostRecord projected onto the same shape used by the streaming path
+// so that DetailDrawer/StatusBar/etc. can keep one display contract.
+export interface CheckResult {
+  record: HostRecord;
+  tunnel: TunnelBreakdown | null;
+  cert_subject?: string;
+  recommended_action?: string;
+  // True when the deep probe ran but the host failed entirely (no rec).
+  passed?: boolean;
+  reason?: string;
+}
+
 export interface RunInfo {
   name: string;
   path: string;

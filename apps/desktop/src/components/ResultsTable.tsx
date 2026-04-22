@@ -9,7 +9,16 @@ import { fmtMbps, fmtMs, fmtKb, fmtBytes } from "../lib/format";
 import { exportResults } from "../lib/hunter";
 import type { HostRecord, Tier } from "../types";
 
-type SortKey = "tier" | "sni" | "rtt" | "mbps" | "bal" | "tunnel";
+type SortKey =
+  | "tier"
+  | "sni"
+  | "rtt"
+  | "mbps"
+  | "bal"
+  | "tunnel"
+  | "tunnel_ok"
+  | "family"
+  | "radio";
 
 export function ResultsTable() {
   const {
@@ -39,6 +48,7 @@ export function ResultsTable() {
         r.sni.toLowerCase().includes(f) ||
         r.tier.toLowerCase().includes(f) ||
         (r.family || "").toLowerCase().includes(f) ||
+        (r.net_type || "").toLowerCase().includes(f) ||
         (r.cert_subj || "").toLowerCase().includes(f)
       );
     });
@@ -63,6 +73,21 @@ export function ResultsTable() {
           break;
         case "tunnel":
           cmp = (a.tunnel_bytes || 0) - (b.tunnel_bytes || 0);
+          break;
+        case "tunnel_ok": {
+          // PASS (true) > unknown (null/undefined) > FAIL (false)
+          const score = (v: boolean | null | undefined) =>
+            v === true ? 2 : v == null ? 1 : 0;
+          cmp = score(a.tunnel_ok) - score(b.tunnel_ok);
+          if (cmp === 0)
+            cmp = (a.tunnel_bytes || 0) - (b.tunnel_bytes || 0);
+          break;
+        }
+        case "family":
+          cmp = (a.family || "").localeCompare(b.family || "");
+          break;
+        case "radio":
+          cmp = (a.net_type || "").localeCompare(b.net_type || "");
           break;
       }
       return sortAsc ? cmp : -cmp;
@@ -209,13 +234,19 @@ export function ResultsTable() {
           label="Δ Balance"
         />
         <SortHeader
-          k="tunnel"
+          k="tunnel_ok"
           cur={sortKey}
           asc={sortAsc}
           onClick={toggleSort}
           label="Tunnel"
         />
-        <div>Family</div>
+        <SortHeader
+          k="family"
+          cur={sortKey}
+          asc={sortAsc}
+          onClick={toggleSort}
+          label="Family"
+        />
       </div>
 
       {/* Body */}

@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { AppConfig, HostRecord, ScanOptions } from "./types";
+import type { AppConfig, CheckResult, HostRecord, ScanOptions } from "./types";
 
 export interface LogLine {
   ts: number;
@@ -34,9 +34,9 @@ export interface ScanState {
   // Cache of `check <sni> --json --verify-tunnel` deep-probe results,
   // keyed by SNI. Populated when the user opens the detail drawer for a
   // row (one probe per row per session, unless explicitly re-run).
-  deepChecks: Map<string, HostRecord>;
+  deepChecks: Map<string, CheckResult>;
   deepCheckPending: Set<string>;
-  setDeepCheck: (sni: string, rec: HostRecord) => void;
+  setDeepCheck: (sni: string, res: CheckResult) => void;
   setDeepCheckPending: (sni: string, pending: boolean) => void;
 
   // Logs (capped to 5000)
@@ -104,13 +104,23 @@ export const useStore = create<ScanState>((set) => ({
   hostOrder: [],
   deepChecks: new Map(),
   deepCheckPending: new Set(),
-  setDeepCheck: (sni, rec) =>
+  setDeepCheck: (sni, res) =>
     set((s) => {
       const dc = new Map(s.deepChecks);
-      dc.set(sni, rec);
+      dc.set(sni, res);
       const pend = new Set(s.deepCheckPending);
       pend.delete(sni);
-      return { deepChecks: dc, deepCheckPending: pend };
+      // Only fold the deep result back into the flat host map when the
+      // hunter actually produced a full record. The check --json failure
+      // payload (`{passed:false, sni, reason, tunnel:null, ...}`) has no
+      // tier/rtt/mbps and would otherwise overwrite a previously valid
+      // streaming row with synthetic defaults.
+      if (res.passed === false) {
+        return { deepChecks: dc, deepCheckPending: pend };
+      }
+      const hosts = new Map(s.hosts);
+      hosts.set(sni, res.record);
+      return { deepChecks: dc, deepCheckPending: pend, hosts };
     }),
   setDeepCheckPending: (sni, pending) =>
     set((s) => {
