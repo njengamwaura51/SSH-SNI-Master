@@ -1,0 +1,155 @@
+root@ubuntu-s-2vcpu-2gb-90gb-intel-ams3:~# bash -c '
+set -euo pipefail
+
+DOMAIN="shopthelook.page"
+SSH_USER="vpn"
+SSH_PASS="vpn123"
+SSH_DAYS=30
+V2_VMESS_PATH="/vmess-x9k2"
+V2_VLESS_PATH="/vless-x9k2"
+WS_SSH_PATH="/ws-bridge-x9k2"
+
+### 1. SSH user
+EXPIRE=$(date -d "+${SSH_DAYS} days" +%Y-%m-%d)
+id "$SSH_USER" &>/dev/null || useradd -m -s /bin/false -e "$EXPIRE" "$SSH_USER"
+chage -E "$EXPIRE" "$SSH_USER"
+echo "$SSH_USER:$SSH_PASS" | chpasswd
+
+### 2. OpenSSH on 22 + 143
+sed -i "s/^#\?PasswordAuthentication.*/PasswordAuthentication yes/" /etc/ssh/sshd_config
+sed -i "/^Port /d" /etc/ssh/sshd_config
+{ echo "Port 22"; echo "Port 143"; } >> /etc/ssh/sshd_config
+systemctl restart ssh
+
+### 3. Dropbear on 109 + 110 (port 80 is nginx, 8080 is velour-api)
+mkdir -p /etc/systemd/system
+cat > /etc/systemd/system/dropbear.service <<EOF
+[Unit]
+Description=Dropbear SSH (109/110)
+After=network.target
+[Service]
+Type=simple
+ExecStart=/usr/sbin/dropbear -F -E -p 109 -p 110
+Restart=always
+[Install]
+WantedBy=multi-user.target
+EOF
+[ -d /etc/dropbear ] || mkdir -p /etc/dropbear
+[ -f /etc/dropbear/dropbear_rsa_host_key ]  || dropbearkey -t rsa  -f /etc/dropbear/dropbear_rsa_host_key  >/dev/null
+[ -f /etc/dropbear/dropbear_ecdsa_host_key ] || dropbearkey -t ecdsa -f /etc/dropbear/dropbear_ecdsa_host_key >/dev/null
+[ -f /etc/dropbear/dropbear_ed25519_host_key ] || dropbearkey -t ed25519 -f /etc/dropbear/dropbear_ed25519_host_key >/dev/nul'NFO===============================================================&type=ws&host=$DOMAIN&path=%2Fvless-x9k2#$DOMAIN-vless | b
+Generating 2048 bit rsa key, this may take a while...
+Generating 256 bit ecdsa key, this may take a while...
+Generating 256 bit ed25519 key, this may take a while...
+Created symlink /etc/systemd/system/multi-user.target.wants/dropbear.service → /etc/systemd/system/dropbear.service.
+stunnel4.service is not a native service, redirecting to systemd-sysv-install.
+Executing: /usr/lib/systemd/systemd-sysv-install enable stunnel4
+Created symlink /etc/systemd/system/multi-user.target.wants/ws-ssh.service → /etc/systemd/system/ws-ssh.service.
+Created symlink /etc/systemd/system/multi-user.target.wants/v2ray.service → /etc/systemd/system/v2ray.service.
+nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+nginx: configuration file /etc/nginx/nginx.conf test is successful
+Rule added
+Rule added (v6)
+Rule added
+Rule added (v6)
+Rule added
+Rule added (v6)
+Rule added
+Rule added (v6)
+Rule added
+Rule added (v6)
+Firewall reloaded
+
+==================================================================
+   HYBRID TUNNEL SERVER — READY      Domain: shopthelook.page   IP: 2a03:b0c0:2:f0:0:1:8c53:6001
+==================================================================
+ACCOUNT
+  User : vpn     Pass : vpn123     Expires : 2026-05-22
+
+PORTS
+  OpenSSH        : 22, 143
+  Dropbear       : 109, 110
+  SSH-SSL        : 445   (TLS, real cert)
+  SSH-WS over TLS: 443 path=/ws-bridge-x9k2
+  VMess WS+TLS   : 443 path=/vmess-x9k2
+  VLESS WS+TLS   : 443 path=/vless-x9k2
+
+V2RAY IMPORT LINKS
+  vmess://eyJ2IjoiMiIsInBzIjoic2hvcHRoZWxvb2sucGFnZS12bWVzcyIsImFkZCI6InNob3B0aGVsb29rLnBhZ2UiLCJwb3J0IjoiNDQzIiwiaWQiOiI1ZWZhNjY2Ny1lMzQ1LTQ0MWUtOWYyNC02OTIxMDRlYjY3Y2UiLCJhaWQiOiIwIiwibmV0Ijoid3MiLCJ0eXBlIjoibm9uZSIsImhvc3QiOiJzaG9wdGhlbG9vay5wYWdlIiwicGF0aCI6Ii92bWVzcy14OWsyIiwidGxzIjoidGxzIiwic25pIjoiIn0=
+  vless://f9d649da-95a4-496a-a7ac-24f728c934a9@shopthelook.page:443?encryption=none&security=tls&sni=&type=ws&host=shopthelook.page&path=%2Fvless-x9k2#shopthelook.page-vless
+
+HTTP CUSTOM (SSL injector example, port 445 — easiest)
+  Type:SSL/TLS  Server:shopthelook.page  Port:445  SNI:<your ISP host>
+  Login: vpn / vpn123  Payload: (none)
+==================================================================
+root@ubuntu-s-2vcpu-2gb-90gb-intel-ams3:~# bash -c '
+echo "=== Listening ports ==="
+ss -ltnp | grep -E ":(22|80|143|443|445|8080|10000|10001) " | sort
+
+echo
+echo "=== Service status ==="
+for s in nginx ssh dropbear stunnel4 v2ray ws-ssh; do
+  printf "  %-12s : %s\n" "$s" "$(systemctl is-active $s 2>/dev/null)"
+done
+
+echo
+echo "=== Website still live ==="
+curl -sk -o /dev/null -w "shopthelook.page → HTTP %{http_code}\n" https://shopthelook.page/
+
+echo
+echo "=== WS bridge handshake (expect 101) ==="
+curl -sk -o /dev/null -D - --resolve shopthelook.page:443:127.0.0.1 \
+  -H "Upgrade: websocket" -H "Connection: Upgrade" \
+  -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" -H "Sec-WebSocket-Version: 13" \
+  https://shopthelook.page/ws-bridge-x9k2 | head -1
+
+echo "=== VMess WS handshake (expect 101) ==="
+curl -sk -o /dev/null -D - --resolve shopthelook.page:443:127.0.0.1 \
+  -H "Upgrade: websocket" -H "Connection: Upgrade" \
+  -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" -H "Sec-WebSocket-Version: 13" \
+  https://shopthelook.page/vmess-x9k2 | head -1
+
+echo "=== VLESS WS handshake (expect 101) ==="
+curl -sk -o /dev/null -D - --resolve shopthelook.page:443:127.0.0.1 \
+  -H "Upgrade: websocket" -H "Connection: Upgrade" \
+  -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" -H "Sec-WebSocket-Version: 13" \
+  https://shopthelook.page/vless-x9k2 | head -1
+
+echo
+echo "=== SSH-SSL (stunnel) handshake ==="
+echo | openssl s_client -connect 127.0.0.1:445 -servername shopthelook.page 2>/dev/null | grep -E "subject|Verify"
+'
+=== Listening ports ===
+LISTEN 0      4096            [::]:22            [::]:*    users:(("sshd",pid=5937,fd=4),("systemd",pid=1,fd=176))                       
+LISTEN 0      4096         0.0.0.0:22         0.0.0.0:*    users:(("sshd",pid=5937,fd=3),("systemd",pid=1,fd=173))                       
+LISTEN 0      4096         0.0.0.0:445        0.0.0.0:*    users:(("stunnel4",pid=6219,fd=9))                                            
+LISTEN 0      4096       127.0.0.1:10000      0.0.0.0:*    users:(("v2ray",pid=6378,fd=3))                                               
+LISTEN 0      4096       127.0.0.1:10001      0.0.0.0:*    users:(("v2ray",pid=6378,fd=6))                                               
+LISTEN 0      511                *:8080             *:*    users:(("node",pid=3736,fd=19))                                               
+LISTEN 0      511             [::]:443           [::]:*    users:(("nginx",pid=6403,fd=8),("nginx",pid=6402,fd=8),("nginx",pid=868,fd=8))
+LISTEN 0      511             [::]:80            [::]:*    users:(("nginx",pid=6403,fd=6),("nginx",pid=6402,fd=6),("nginx",pid=868,fd=6))
+LISTEN 0      511          0.0.0.0:443        0.0.0.0:*    users:(("nginx",pid=6403,fd=7),("nginx",pid=6402,fd=7),("nginx",pid=868,fd=7))
+LISTEN 0      511          0.0.0.0:80         0.0.0.0:*    users:(("nginx",pid=6403,fd=5),("nginx",pid=6402,fd=5),("nginx",pid=868,fd=5))
+
+=== Service status ===
+  nginx        : active
+  ssh          : active
+  dropbear     : active
+  stunnel4     : active
+  v2ray        : active
+  ws-ssh       : failed
+
+=== Website still live ===
+shopthelook.page → HTTP 200
+
+=== WS bridge handshake (expect 101) ===
+HTTP/2 400 
+=== VMess WS handshake (expect 101) ===
+HTTP/2 404 
+=== VLESS WS handshake (expect 101) ===
+HTTP/2 404 
+
+=== SSH-SSL (stunnel) handshake ===
+subject=CN = shopthelook.page
+Verify return code: 0 (ok)
+root@ubuntu-s-2vcpu-2gb-90gb-intel-ams3:~# 
