@@ -1,0 +1,117 @@
+root@ubuntu-s-2vcpu-2gb-90gb-intel-ams3:~# sudo bash -c 'set -euo pipefail; \
+  REPO=https://github.com/njengamwaura51/SSH-SNI-Master.git; \
+  DIR=/opt/sni-hunter-src; \
+  command -v git    >/dev/null || apt-get update -qq && apt-get install -y -qq git curl ca-certificates; \
+  command -v node   >/dev/null || { curl -fsSL https://deb.nodesource.com/setup_20.x | bash -; apt-get install -y -qq nodejs; }; \
+  command -v pnpm   >/dev/null || npm i -g pnpm@10.33.0; \
+  if [ -d "$DIR/.git" ]; then git -C "$DIR" fetch --all --prune && git -C "$DIR" reset --hard origin/main; \
+  else git clone --depth 1 "$REPO" "$DIR"; fi; \
+  cd "$DIR"; \
+  pnpm install --frozen-lockfile; \
+  pnpm --filter @workspace/api-server run build; \
+  bash tools/server-install.sh install --domain shopthelook.page; \
+  bash tools/server-install.sh check'
+Cloning into '/opt/sni-hunter-src'...
+Username for 'https://github.com': ^C
+root@ubuntu-s-2vcpu-2gb-90gb-intel-ams3:~# sudo bash -c 'set -euo pipefail; \
+  REPO=https://github.com/njengamwaura51/SSH-SNI-Master.git; \
+  DIR=/opt/sni-hunter-src; \
+  command -v git    >/dev/null || apt-get update -qq && apt-get install -y -qq git curl ca-certificates; \
+  command -v node   >/dev/null || { curl -fsSL https://deb.nodesource.com/setup_20.x | bash -; apt-get install -y -qq nodejs; }; \
+  command -v pnpm   >/dev/null || npm i -g pnpm@10.33.0; \
+  if [ -d "$DIR/.git" ]; then git -C "$DIR" fetch --all --prune && git -C "$DIR" reset --hard origin/main; \
+  else git clone --depth 1 "$REPO" "$DIR"; fi; \
+  cd "$DIR"; \
+  pnpm install --frozen-lockfile; \
+  pnpm --filter @workspace/api-server run build; \
+  bash tools/server-install.sh install --domain shopthelook.page; \
+  bash tools/server-install.sh check'
+Cloning into '/opt/sni-hunter-src'...
+remote: Enumerating objects: 212, done.
+remote: Counting objects: 100% (212/212), done.
+remote: Compressing objects: 100% (182/182), done.
+remote: Total 212 (delta 17), reused 212 (delta 17), pack-reused 0 (from 0)
+Receiving objects: 100% (212/212), 255.21 KiB | 6.54 MiB/s, done.
+Resolving deltas: 100% (17/17), done.
+Scope: all 8 workspace projects
+Lockfile is up to date, resolution step is skipped
+Packages: +480
++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+   ╭──────────────────────────────────────────╮
+   │                                          │
+   │   Update available! 10.33.0 → 10.33.1.   │
+   │   Changelog: https://pnpm.io/v/10.33.1   │
+   │     To update, run: pnpm add -g pnpm     │
+   │                                          │
+   ╰──────────────────────────────────────────╯
+
+Progress: resolved 480, reused 0, downloaded 480, added 480, done
+node_modules/.pnpm/esbuild@0.27.3/node_modules/esbuild: Running postinstall script, done in 83ms
+
+devDependencies:
++ prettier 3.8.1
++ typescript 5.9.3
+
+. preinstall$ sh -c 'rm -f package-lock.json yarn.lock; case "$npm_config_user_agent" in pnpm/*) ;; *) echo "Use pnpm inst…
+└─ Done in 11ms
+Done in 10.4s using pnpm v10.33.0
+
+> @workspace/api-server@0.0.0 build /opt/sni-hunter-src/artifacts/api-server
+> node ./build.mjs
+
+
+  dist/index.mjs                       1.5mb ⚠️
+  dist/pino-worker.mjs               153.4kb
+  dist/pino-file.mjs                 142.1kb
+  dist/pino-pretty.mjs               114.6kb
+  dist/thread-stream-worker.mjs        7.3kb
+  dist/index.mjs.map                   2.3mb
+  dist/pino-worker.mjs.map           256.9kb
+  dist/pino-file.mjs.map             229.0kb
+  dist/pino-pretty.mjs.map           203.9kb
+  dist/thread-stream-worker.mjs.map   12.0kb
+
+⚡ Done in 261ms
+
+=== SNI Hunter installer ===
+  ➜ Domain         : shopthelook.page
+  ➜ Local port     : 8090
+  ➜ Public prefix  : https://shopthelook.page/sni-hunter
+  ➜ Releases dir   : /var/www/sni-hunter/releases
+
+=== Existing tunnel stack (read-only probe) ===
+  nginx        : active
+  ssh          : active
+  dropbear     : active
+  stunnel4     : active
+  v2ray        : active
+  ws-ssh       : active
+  openvpn      : not installed
+
+=== Listening sockets ===
+State  Recv-Q Send-Q Local Address:Port  Peer Address:PortProcess                                                                        
+LISTEN 0      4096         0.0.0.0:22         0.0.0.0:*    users:(("sshd",pid=7740,fd=3),("systemd",pid=1,fd=172))                       
+LISTEN 0      4096       127.0.0.1:10001      0.0.0.0:*    users:(("v2ray",pid=6378,fd=6))                                               
+LISTEN 0      4096       127.0.0.1:10000      0.0.0.0:*    users:(("v2ray",pid=6378,fd=3))                                               
+LISTEN 0      100        127.0.0.1:8888       0.0.0.0:*    users:(("python3",pid=7602,fd=6))                                             
+LISTEN 0      4096         0.0.0.0:445        0.0.0.0:*    users:(("stunnel4",pid=6219,fd=9))                                            
+LISTEN 0      511          0.0.0.0:443        0.0.0.0:*    users:(("nginx",pid=6403,fd=7),("nginx",pid=6402,fd=7),("nginx",pid=868,fd=7))
+LISTEN 0      4096            [::]:22            [::]:*    users:(("sshd",pid=7740,fd=4),("systemd",pid=1,fd=175))                       
+LISTEN 0      511             [::]:443           [::]:*    users:(("nginx",pid=6403,fd=8),("nginx",pid=6402,fd=8),("nginx",pid=868,fd=8))
+
+=== WebSocket handshakes (expect HTTP/1.1 101) ===
+  /ws-bridge-x9k2                → 426000
+  /vmess-x9k2                    → 404
+  /vless-x9k2                    → 404
+  /sni-hunter/api/releases       → 200
+
+=== Website reachability ===
+  shopthelook.page → HTTP 200
+  ➜ Node.js v20.20.2 already present
+  ➜ Copying pre-built api-server from repo (artifacts/api-server/dist)
+  ➜ Writing /etc/systemd/system/sni-hunter-api.service
+Created symlink /etc/systemd/system/multi-user.target.wants/sni-hunter-api.service → /etc/systemd/system/sni-hunter-api.service.
+  ➜ sni-hunter-api active on 127.0.0.1:8090
+  ✘ nginx site not found: /etc/nginx/sites-enabled/shopthelook.page
+root@ubuntu-s-2vcpu-2gb-90gb-intel-ams3:~# 
