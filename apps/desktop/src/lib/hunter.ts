@@ -6,10 +6,13 @@ import type {
   AppConfig,
   CheckResult,
   HostRecord,
+  LaunchTunnelReq,
   RunInfo,
   ScanEvent,
   ScanOptions,
   TunnelBreakdown,
+  TunnelEvent,
+  TunnelStatus,
 } from "../types";
 
 // Rust serde uses snake_case for the discriminator; convert to camelCase here
@@ -99,6 +102,35 @@ export async function subscribeScanEvents(
       cb(normalizeEvent(msg.payload));
     } catch (err) {
       console.error("scan event handler threw", err);
+    }
+  });
+}
+
+// Tunnel launcher (Task #24). The Rust side guarantees at most one tunnel is
+// running; launch_tunnel rejects with an error message when one is active so
+// the caller can prompt for swap.
+export async function launchTunnel(
+  req: LaunchTunnelReq
+): Promise<TunnelStatus> {
+  return invoke<TunnelStatus>("launch_tunnel", { req });
+}
+export async function stopTunnel(): Promise<boolean> {
+  return invoke<boolean>("stop_tunnel");
+}
+export async function tunnelStatus(): Promise<TunnelStatus> {
+  return invoke<TunnelStatus>("tunnel_status");
+}
+export async function tunnelClientAvailable(name: string): Promise<boolean> {
+  return invoke<boolean>("tunnel_client_available", { name });
+}
+export async function subscribeTunnelEvents(
+  cb: (e: TunnelEvent) => void
+): Promise<UnlistenFn> {
+  return listen<TunnelEvent>("tunnel:event", (msg) => {
+    try {
+      cb(msg.payload);
+    } catch (err) {
+      console.error("tunnel event handler threw", err);
     }
   });
 }
@@ -225,6 +257,10 @@ export function parseCheckJson(line: string): CheckResult | null {
         ? (obj.promo_delta_kb as number)
         : null,
     promo_name: promoName,
+    promo_mb_remaining:
+      typeof obj.promo_mb_remaining === "number"
+        ? (obj.promo_mb_remaining as number)
+        : null,
     raw: t,
   };
   return {

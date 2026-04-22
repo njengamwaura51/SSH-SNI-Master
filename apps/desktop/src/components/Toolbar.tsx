@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import {
   FolderOpen,
   Moon,
@@ -31,7 +32,26 @@ export function Toolbar() {
     setTheme,
     config,
     setConfig,
+    hosts,
   } = useStore();
+
+  // Promo countdown chip — Task #24. Shows the *minimum* MB-remaining
+  // observed across PROMO_BUNDLE_* hosts in the current run (worst case
+  // wins because the bundle drains across all probes). Hidden when no
+  // back-end could read promo balances.
+  const promo = useMemo(() => {
+    let min: number | null = null;
+    let name: string | undefined;
+    for (const r of hosts.values()) {
+      if (typeof r.promo_mb_remaining === "number" && r.promo_mb_remaining >= 0) {
+        if (min === null || r.promo_mb_remaining < min) {
+          min = r.promo_mb_remaining;
+          name = r.promo_name;
+        }
+      }
+    }
+    return min === null ? null : { mb: min, name };
+  }, [hosts]);
 
   async function onToggleTheme() {
     const next = theme === "dark" ? "light" : "dark";
@@ -125,6 +145,21 @@ export function Toolbar() {
       </div>
 
       <div className="flex-1" />
+
+      {promo && (
+        <span
+          className={`chip ${
+            promo.mb <= 5
+              ? "bg-error/15 text-error border-error/40"
+              : promo.mb <= 25
+              ? "bg-warning/15 text-warning border-warning/40"
+              : "bg-promo/15 text-promo border-promo/40"
+          }`}
+          title={`Promo bundle ${promo.name || ""} — ${promo.mb} MB left (worst-case across probes)`}
+        >
+          Promo: {promo.mb} MB left
+        </span>
+      )}
 
       {!isRunning ? (
         <button className="btn-primary" onClick={onStart}>

@@ -781,6 +781,11 @@ probe() {
   # drain on the promo bundle while the main balance held flat is the signal
   # for PROMO_BUNDLE_<NAME> — the host is "free" today but the bundle exhausts.
   local promo_delta=-1 promo_name="" promo_entry promo_code
+  # promo_mb_remaining: rounded MB left in the promo bundle after this probe
+  # (read from the post-transfer USSD poll). -1 = unknown / no back-end.
+  # Surfaced so the desktop GUI can show a live "MB left in promo" chip and
+  # auto-pause before the bundle drains.
+  local promo_mb_remaining=-1
   promo_entry=$(promo_bundle_for "$CARRIER")
   [ -n "$promo_entry" ] && {
     promo_code="${promo_entry%%:*}"
@@ -817,6 +822,11 @@ probe() {
           if [ "$pp" -ge 0 ] && [ "$pa" -ge 0 ]; then
             promo_delta=$(( pp - pa ))
             [ "$promo_delta" -lt 0 ] && promo_delta=0
+          fi
+          # remaining promo MB after this probe (rounded). Even if delta
+          # couldn't be computed (pp missing) the post-read alone is useful.
+          if [ "$pa" -ge 0 ]; then
+            promo_mb_remaining=$(( pa / 1024 ))
           fi
           # ---- exhaustion detection ----
           # Bundle was non-zero pre and exactly zero post → it just drained
@@ -893,9 +903,11 @@ except Exception: print(0)' 2>/dev/null)
 
   # CSV schema: 1=tier 2=sni 3=rtt 4=jit 5=mbps 6=bal 7=iplock 8=ntype 9=family
   # 10=ws_code 11=tunnel_ok 12=tunnel_bytes 13=promo_delta_kb 14=promo_name
-  printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|101|%s|%s|%s|%s\n" \
+  # 15=promo_mb_remaining (rounded MB left in the promo bundle, -1=unknown)
+  printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|101|%s|%s|%s|%s|%s\n" \
     "$tier" "$sni" "$rtt" "$jitter" "$mbps" "$bal_delta" "$iplock" "$ntype" \
-    "$family" "$tunnel_ok" "$tunnel_bytes" "$promo_delta" "$promo_name"
+    "$family" "$tunnel_ok" "$tunnel_bytes" "$promo_delta" "$promo_name" \
+    "$promo_mb_remaining"
 }
 
 # Strict tier classifier — priority order is fixed.
@@ -2172,9 +2184,10 @@ cmd_check() {
   # When probe ran, also collect cert subject and URL (used by both human and JSON paths)
   local cert_subj="" route_ip="$TARGET_IP"
   if [ -n "$rec" ]; then
-    IFS='|' read -r f_tier f_sni f_rtt f_jit f_mbps f_bal f_iplock f_net f_family _ f_tok f_tbytes f_promo_kb f_promo_name <<<"$rec"
-    [ -z "$f_promo_kb"   ] && f_promo_kb=-1
-    [ -z "$f_promo_name" ] && f_promo_name=""
+    IFS='|' read -r f_tier f_sni f_rtt f_jit f_mbps f_bal f_iplock f_net f_family _ f_tok f_tbytes f_promo_kb f_promo_name f_promo_mb_rem <<<"$rec"
+    [ -z "$f_promo_kb"     ] && f_promo_kb=-1
+    [ -z "$f_promo_name"   ] && f_promo_name=""
+    [ -z "$f_promo_mb_rem" ] && f_promo_mb_rem=-1
     [ "$f_iplock" = "1" ] && route_ip=$(resolve_host "$f_sni" 2>/dev/null) || true
     cert_subj=$(echo | timeout "$TIMEOUT" openssl s_client -connect "${TARGET_IP}:${PORT}" \
                   -servername "$f_sni" 2>/dev/null </dev/null \
@@ -2229,14 +2242,17 @@ PY
     fi
     python3 - "$f_tier" "$f_sni" "$f_rtt" "$f_jit" "$f_mbps" "$f_bal" "$f_iplock" \
               "$f_net" "$f_family" "$cert_subj" "$url_probed" "$rec_action" \
-              "$tunnel_json" "$f_promo_kb" "$f_promo_name" <<'PY'
+              "$tunnel_json" "$f_promo_kb" "$f_promo_name" "$f_promo_mb_rem" <<'PY'
 import sys, json
 (tier, sni, rtt, jit, mbps, bal, iplock, net, family,
- cert, url, action, tunnel, promo_kb, promo_name) = sys.argv[1:16]
+ cert, url, action, tunnel, promo_kb, promo_name, promo_mb_rem) = sys.argv[1:17]
 # promo_delta_kb: -1 means "back-end couldn't read the promo bundle"
 # (no promo USSD configured for the carrier, or no auto/accessibility/
 # interactive back-end available). promo_name carries which bundle was
 # polled, so a JSON consumer can correlate PROMO_BUNDLE_<NAME> tiers.
+# promo_mb_remaining: rounded MB left in the bundle right after this
+# probe (None when no back-end could poll it). The desktop GUI's live
+# promo countdown chip subscribes to this field.
 obj = {
   "schema_version": 2, "passed": True, "tier": tier, "sni": sni,
   "rtt_ms": int(rtt), "jitter_ms": int(jit), "mbps": float(mbps),
@@ -2244,8 +2260,9 @@ obj = {
   "net_type": net, "family": family,
   "cert_subject": cert or None, "url_probed": url,
   "recommended_action": action,
-  "promo_delta_kb": int(promo_kb) if promo_kb not in ("","-1") else None,
-  "promo_bundle":   promo_name or None,
+  "promo_delta_kb":      int(promo_kb)     if promo_kb     not in ("","-1") else None,
+  "promo_bundle":        promo_name or None,
+  "promo_mb_remaining":  int(promo_mb_rem) if promo_mb_rem not in ("","-1") else None,
   "tunnel": (json.loads(tunnel) if tunnel != "null" else None),
 }
 print(json.dumps(obj))

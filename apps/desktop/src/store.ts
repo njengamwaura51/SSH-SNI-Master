@@ -1,5 +1,11 @@
 import { create } from "zustand";
-import type { AppConfig, CheckResult, HostRecord, ScanOptions } from "./types";
+import type {
+  AppConfig,
+  CheckResult,
+  HostRecord,
+  ScanOptions,
+  TunnelStatus,
+} from "./types";
 
 export interface LogLine {
   ts: number;
@@ -41,6 +47,11 @@ export interface ScanState {
 
   // Logs (capped to 5000)
   logs: LogLine[];
+
+  // Tunnel launcher (Task #24). Mirrors what the Rust side knows; refreshed
+  // from tunnelStatus() on mount and on every tunnel:event.
+  tunnel: TunnelStatus;
+  setTunnel: (t: TunnelStatus) => void;
 
   // UI
   selectedSni: string | null;
@@ -131,6 +142,9 @@ export const useStore = create<ScanState>((set) => ({
     }),
 
   logs: [],
+
+  tunnel: { running: false },
+  setTunnel: (t) => set({ tunnel: t }),
 
   selectedSni: null,
   filterText: "",

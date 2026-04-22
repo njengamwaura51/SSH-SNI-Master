@@ -1,11 +1,17 @@
 import { useEffect, useState } from "react";
-import { Copy, FileDown, RefreshCw } from "lucide-react";
+import { Copy, FileDown, PlayCircle, RefreshCw, StopCircle } from "lucide-react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
 import { useStore } from "../store";
 import { tierMeta } from "../theme";
 import { fmtBytes, fmtKb, fmtMbps, fmtMs, fmtBool } from "../lib/format";
-import { checkOne, generateOvpnSnippet, parseCheckJson } from "../lib/hunter";
+import {
+  checkOne,
+  generateOvpnSnippet,
+  launchTunnel,
+  parseCheckJson,
+  stopTunnel,
+} from "../lib/hunter";
 import type { TunnelEndpointResult } from "../types";
 
 export function DetailDrawer() {
@@ -19,8 +25,10 @@ export function DetailDrawer() {
     setDeepCheck,
     setDeepCheckPending,
     pushLog,
+    tunnel,
   } = useStore();
   const [snippet, setSnippet] = useState<string>("");
+  const [launching, setLaunching] = useState(false);
 
   // Spec: "clicking a row runs sni-hunter.sh check <sni> --json
   // --verify-tunnel". We do that lazily — once per row per session — and
@@ -108,6 +116,46 @@ export function DetailDrawer() {
         stream: "stderr",
         line: `snippet failed: ${String(e)}`,
       });
+    }
+  }
+
+  async function onLaunchTunnel() {
+    if (!config) return;
+    setLaunching(true);
+    try {
+      // Generate snippet on the Rust side using the persisted UUIDs/paths
+      // so we never embed secrets in the front-end bundle.
+      const snip = await generateOvpnSnippet({
+        sni: r!.sni,
+        tunnelDomain: config.tunnelDomain,
+        tunnelPort: config.tunnelPort,
+        wsPath: config.wsPath,
+        uuidVmess: config.uuidVmess || undefined,
+        uuidVless: config.uuidVless || undefined,
+      });
+      // Refuse to swap silently — the Rust side rejects but UX is nicer
+      // when the user explicitly confirms before tearing down a live link.
+      if (tunnel.running) {
+        const ok = window.confirm(
+          `A tunnel is already running via ${tunnel.sni}.\nStop it and launch ${r!.sni} instead?`
+        );
+        if (!ok) {
+          setLaunching(false);
+          return;
+        }
+        await stopTunnel();
+        // Give the watchdog one tick to flip current → None.
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      await launchTunnel({ sni: r!.sni, kind: "openvpn", snippet: snip });
+    } catch (e) {
+      pushLog({
+        ts: Date.now(),
+        stream: "stderr",
+        line: `launch_tunnel failed: ${String(e)}`,
+      });
+    } finally {
+      setLaunching(false);
     }
   }
 
@@ -249,11 +297,36 @@ export function DetailDrawer() {
       <section className="space-y-2">
         <div className="flex gap-2">
           <button className="btn flex-1" onClick={genSnippet}>
-            <FileDown size={14} /> Generate tunnel snippet
+            <FileDown size={14} /> Generate snippet
           </button>
           {snippet && (
             <button className="btn-primary" onClick={saveSnippet}>
               Save…
+            </button>
+          )}
+        </div>
+        <div className="flex gap-2">
+          {tunnel.running && tunnel.sni === r.sni ? (
+            <button className="btn-danger flex-1" onClick={() => stopTunnel()}>
+              <StopCircle size={14} /> Stop tunnel
+            </button>
+          ) : (
+            <button
+              className="btn-primary flex-1"
+              onClick={onLaunchTunnel}
+              disabled={launching || !config}
+              title={
+                tunnel.running
+                  ? `Will stop the current tunnel (${tunnel.sni}) first`
+                  : "Spawn local openvpn with this bug-host"
+              }
+            >
+              <PlayCircle size={14} />
+              {launching
+                ? "Launching…"
+                : tunnel.running
+                ? "Swap tunnel here"
+                : "Launch tunnel"}
             </button>
           )}
         </div>

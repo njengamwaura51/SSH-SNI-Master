@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
+import { StopCircle } from "lucide-react";
 import { useStore } from "../store";
 import { tierMeta, tierRank } from "../theme";
 import { fmtKb } from "../lib/format";
+import { stopTunnel } from "../lib/hunter";
 
 export function StatusBar() {
   const {
@@ -13,14 +15,37 @@ export function StatusBar() {
     exitCode,
     outDir,
     scanOptions,
+    tunnel,
+    pushLog,
   } = useStore();
 
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
-    if (!isRunning) return;
+    // Tick when either a scan or a tunnel is running so the elapsed/uptime
+    // chips actually advance once a second.
+    if (!isRunning && !tunnel.running) return;
     const id = setInterval(() => setNow(Date.now()), 500);
     return () => clearInterval(id);
-  }, [isRunning]);
+  }, [isRunning, tunnel.running]);
+
+  async function onStopTunnel() {
+    try {
+      await stopTunnel();
+    } catch (e) {
+      pushLog({
+        ts: Date.now(),
+        stream: "stderr",
+        line: `stop_tunnel failed: ${String(e)}`,
+      });
+    }
+  }
+
+  // Tunnel uptime (mm:ss). startedUnix is set on the Rust side at spawn.
+  let tunnelUptime = "";
+  if (tunnel.running && tunnel.startedUnix) {
+    const s = Math.max(0, Math.floor(now / 1000) - tunnel.startedUnix);
+    tunnelUptime = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  }
 
   const elapsedMs = startedAt
     ? (isRunning ? now : endedAt || now) - startedAt
@@ -154,6 +179,32 @@ export function StatusBar() {
         <>
           <span>·</span>
           <span>elapsed {elapsed}</span>
+        </>
+      )}
+
+      {tunnel.running && (
+        <>
+          <span>·</span>
+          <span
+            className="inline-flex items-center gap-1.5 px-1.5 py-0.5 rounded bg-success/10 text-success border border-success/30"
+            title={
+              tunnel.configPath
+                ? `Tunnel ${tunnel.kind} via ${tunnel.sni}\nconfig: ${tunnel.configPath}`
+                : `Tunnel ${tunnel.kind} via ${tunnel.sni}`
+            }
+          >
+            <span className="inline-block w-2 h-2 rounded-full bg-success animate-pulse-soft" />
+            Tunnel: <span className="font-mono">{tunnel.sni}</span>
+            {tunnelUptime && <span className="tabular-nums">· {tunnelUptime} up</span>}
+            <button
+              className="ml-1 hover:text-error"
+              onClick={onStopTunnel}
+              aria-label="Stop tunnel"
+              title="Stop tunnel"
+            >
+              <StopCircle size={12} />
+            </button>
+          </span>
         </>
       )}
 

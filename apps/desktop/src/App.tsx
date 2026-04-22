@@ -13,6 +13,8 @@ import {
   parseHostLine,
   saveConfig,
   subscribeScanEvents,
+  subscribeTunnelEvents,
+  tunnelStatus,
 } from "./lib/hunter";
 
 export default function App() {
@@ -32,11 +34,13 @@ export default function App() {
     endedScan,
     pushHost,
     pushLog,
+    setTunnel,
   } = useStore();
   const hydratedRef = useRef(false);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
+    let unlistenTunnel: (() => void) | undefined;
     (async () => {
       try {
         const cfg = await loadConfig();
@@ -129,9 +133,69 @@ export default function App() {
           line: `event subscribe failed: ${String(e)}`,
         });
       }
+
+      // Tunnel launcher (Task #24): hydrate current state and subscribe.
+      try {
+        setTunnel(await tunnelStatus());
+      } catch (e) {
+        pushLog({
+          ts: Date.now(),
+          stream: "stderr",
+          line: `tunnel_status failed: ${String(e)}`,
+        });
+      }
+      try {
+        unlistenTunnel = await subscribeTunnelEvents((e) => {
+          switch (e.type) {
+            case "started":
+              setTunnel({
+                running: true,
+                sni: e.sni,
+                kind: e.kind,
+                startedUnix: Math.floor(Date.now() / 1000),
+                configPath: e.config_path,
+              });
+              pushLog({
+                ts: Date.now(),
+                stream: "info",
+                line: `tunnel up via ${e.sni} (${e.kind})`,
+              });
+              break;
+            case "stopped":
+              setTunnel({ running: false });
+              pushLog({
+                ts: Date.now(),
+                stream: "info",
+                line: `tunnel stopped (exit ${e.code})`,
+              });
+              break;
+            case "log":
+              pushLog({
+                ts: Date.now(),
+                stream: e.stream,
+                line: `[tunnel] ${e.line}`,
+              });
+              break;
+            case "error":
+              pushLog({
+                ts: Date.now(),
+                stream: "stderr",
+                line: `tunnel error: ${e.message}`,
+              });
+              break;
+          }
+        });
+      } catch (e) {
+        pushLog({
+          ts: Date.now(),
+          stream: "stderr",
+          line: `tunnel subscribe failed: ${String(e)}`,
+        });
+      }
     })();
     return () => {
       if (unlisten) unlisten();
+      if (unlistenTunnel) unlistenTunnel();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

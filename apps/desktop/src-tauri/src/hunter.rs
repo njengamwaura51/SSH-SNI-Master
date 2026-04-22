@@ -293,6 +293,13 @@ fn csv_row_to_host_json(line: &str) -> Option<String> {
         .get(13)
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty() && s != "-1");
+    // Col 15 — promo_mb_remaining (rounded MB left in the bundle after the
+    // post-transfer USSD poll). Hunter writes "-1" when no back-end could
+    // poll it; treat as null so the chip stays hidden.
+    let promo_mb_remaining = parts
+        .get(14)
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .filter(|n| *n >= 0);
 
     let v = json!({
         "schema_version": 2,
@@ -310,6 +317,7 @@ fn csv_row_to_host_json(line: &str) -> Option<String> {
         "tunnel_bytes": tunnel_bytes,
         "promo_delta_kb": promo_delta_kb,
         "promo_name": promo_name,
+        "promo_mb_remaining": promo_mb_remaining,
         "raw": trimmed,
     });
     Some(v.to_string())

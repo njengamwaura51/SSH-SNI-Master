@@ -1,11 +1,13 @@
 mod config;
 mod exports;
 mod hunter;
+mod tunnel;
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use hunter::HunterState;
+use tunnel::TunnelState;
 
 pub fn run() {
     tracing_subscriber::fmt()
@@ -16,6 +18,7 @@ pub fn run() {
         .init();
 
     let hunter_state = Arc::new(Mutex::new(HunterState::default()));
+    let tunnel_state = Arc::new(Mutex::new(TunnelState::default()));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -23,6 +26,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
         .manage(hunter_state)
+        .manage(tunnel_state)
         .invoke_handler(tauri::generate_handler![
             hunter::start_scan,
             hunter::cancel_scan,
@@ -36,6 +40,10 @@ pub fn run() {
             exports::export_results,
             exports::open_results_folder,
             exports::generate_ovpn_snippet,
+            tunnel::launch_tunnel,
+            tunnel::stop_tunnel,
+            tunnel::tunnel_status,
+            tunnel::tunnel_client_available,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
