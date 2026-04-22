@@ -1,0 +1,66 @@
+root@ubuntu-s-2vcpu-2gb-90gb-intel-ams3:~# bash -c '
+echo "=== Listening ports ==="
+ss -ltnp | grep -E ":(22|80|143|443|445|8080|10000|10001) " | sort
+
+echo
+echo "=== Service status ==="
+for s in nginx ssh dropbear stunnel4 v2ray ws-ssh; do
+  printf "  %-12s : %s\n" "$s" "$(systemctl is-active $s 2>/dev/null)"
+done
+
+echo
+echo "=== Website still live ==="
+curl -sk -o /dev/null -w "shopthelook.page → HTTP %{http_code}\n" https://shopthelook.page/
+
+echo
+echo "=== WS bridge handshake (expect 101) ==="
+curl -sk -o /dev/null -D - --resolve shopthelook.page:443:127.0.0.1 \
+  -H "Upgrade: websocket" -H "Connection: Upgrade" \
+  -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" -H "Sec-WebSocket-Version: 13" \
+  https://shopthelook.page/ws-bridge-x9k2 | head -1
+
+echo "=== VMess WS handshake (expect 101) ==="
+curl -sk -o /dev/null -D - --resolve shopthelook.page:443:127.0.0.1 \
+  -H "Upgrade: websocket" -H "Connection: Upgrade" \
+  -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" -H "Sec-WebSocket-Version: 13" \
+  https://shopthelook.page/vmess-x9k2 | head -1
+
+echo "=== VLESS WS handshake (expect 101) ==="
+curl -sk -o /dev/null -D - --resolve shopthelook.page:443:127.0.0.1 \
+  -H "Upgrade: websocket" -H "Connection: Upgrade" \
+  -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" -H "Sec-WebSocket-Version: 13" \
+  https://shopthelook.page/vless-x9k2 | head -1
+
+echo
+echo "=== SSH-SSL (stunnel) handshake ==="
+echo | openssl s_client -connect 127.0.0.1:445 -servername shopthelook.page 2>/dev/null | grep -E "subject|Verify"
+'
+=== Listening ports ===
+LISTEN 0      4096            [::]:22           [::]:*    users:(("sshd",pid=5791,fd=4),("systemd",pid=1,fd=198))                     
+LISTEN 0      4096         0.0.0.0:22        0.0.0.0:*    users:(("sshd",pid=5791,fd=3),("systemd",pid=1,fd=197))                     
+LISTEN 0      511                *:8080            *:*    users:(("node",pid=3736,fd=19))                                             
+LISTEN 0      511             [::]:443          [::]:*    users:(("nginx",pid=871,fd=8),("nginx",pid=870,fd=8),("nginx",pid=868,fd=8))
+LISTEN 0      511             [::]:80           [::]:*    users:(("nginx",pid=871,fd=6),("nginx",pid=870,fd=6),("nginx",pid=868,fd=6))
+LISTEN 0      511          0.0.0.0:443       0.0.0.0:*    users:(("nginx",pid=871,fd=7),("nginx",pid=870,fd=7),("nginx",pid=868,fd=7))
+LISTEN 0      511          0.0.0.0:80        0.0.0.0:*    users:(("nginx",pid=871,fd=5),("nginx",pid=870,fd=5),("nginx",pid=868,fd=5))
+
+=== Service status ===
+  nginx        : active
+  ssh          : active
+  dropbear     : inactive
+  stunnel4     : inactive
+  v2ray        : inactive
+  ws-ssh       : inactive
+
+=== Website still live ===
+shopthelook.page → HTTP 200
+
+=== WS bridge handshake (expect 101) ===
+HTTP/2 400 
+=== VMess WS handshake (expect 101) ===
+HTTP/2 200 
+=== VLESS WS handshake (expect 101) ===
+HTTP/2 200 
+
+=== SSH-SSL (stunnel) handshake ===
+root@ubuntu-s-2vcpu-2gb-90gb-intel-ams3:~# 
