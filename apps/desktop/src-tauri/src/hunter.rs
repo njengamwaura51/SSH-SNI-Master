@@ -761,6 +761,27 @@ mod tests {
         assert!(j.contains("\"tunnel_bytes\":null"));
     }
     #[test]
+    fn csv_to_json_parses_15_cols_with_promo_balance() {
+        // Schema v3 (Task #24): cols 13/14/15 are promo_delta_kb |
+        // promo_name | promo_mb_remaining. Verify the new col-15 field
+        // round-trips as a JSON number alongside the existing 13/14
+        // promo metadata.
+        let s = "PROMO_BUNDLE_TIKTOK|m.tiktokcdn.com|62|5|18.0|0|100|LTE|TIKTOK|101|-1|-1|2048|TikTok Daily 100MB|73";
+        let j = csv_row_to_host_json(s).unwrap();
+        assert!(j.contains("\"promo_delta_kb\":2048"), "json: {j}");
+        assert!(j.contains("\"promo_name\":\"TikTok Daily 100MB\""), "json: {j}");
+        assert!(j.contains("\"promo_mb_remaining\":73"), "json: {j}");
+    }
+    #[test]
+    fn csv_to_json_promo_remaining_negative_means_unknown() {
+        // -1 is the sentinel for "back-end couldn't read the balance".
+        // It must serialize as null, not as -1, so the Toolbar countdown
+        // chip and DetailDrawer don't display nonsense.
+        let s = "PROMO_BUNDLE_DAILY_SOCIAL|m.example.com|55|4|22.0|0|100|LTE|META|101|-1|-1|0|Daily Social|-1";
+        let j = csv_row_to_host_json(s).unwrap();
+        assert!(j.contains("\"promo_mb_remaining\":null"), "json: {j}");
+    }
+    #[test]
     fn csv_to_json_skips_header_and_empty_sni() {
         assert!(csv_row_to_host_json("tier|sni|rtt|jit|mbps|bal|iplock|ntype|family").is_none());
         assert!(csv_row_to_host_json("UNLIMITED_FREE||40|3|45|0|0|LTE|OTHER").is_none());

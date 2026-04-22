@@ -60,6 +60,7 @@ export interface ScanState {
   showLogs: boolean;
   showSettings: boolean;
   showTunnelTest: boolean;
+  showAbout: boolean;
   scanOptions: ScanOptions;
 
   // Actions
@@ -69,6 +70,7 @@ export interface ScanState {
   setShowLogs: (b: boolean) => void;
   setShowSettings: (b: boolean) => void;
   setShowTunnelTest: (b: boolean) => void;
+  setShowAbout: (b: boolean) => void;
   setScanOptions: (o: Partial<ScanOptions>) => void;
 
   startedScan: (scanId: string, outDir: string) => void;
@@ -152,6 +154,7 @@ export const useStore = create<ScanState>((set) => ({
   showLogs: false,
   showSettings: false,
   showTunnelTest: false,
+  showAbout: false,
   scanOptions: defaultScanOptions,
 
   setSelected: (s) => set({ selectedSni: s }),
@@ -160,6 +163,7 @@ export const useStore = create<ScanState>((set) => ({
   setShowLogs: (b) => set({ showLogs: b }),
   setShowSettings: (b) => set({ showSettings: b }),
   setShowTunnelTest: (b) => set({ showTunnelTest: b }),
+  setShowAbout: (b) => set({ showAbout: b }),
   setScanOptions: (o) =>
     set((s) => ({ scanOptions: { ...s.scanOptions, ...o } })),
 

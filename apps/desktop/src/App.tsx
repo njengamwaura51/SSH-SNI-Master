@@ -6,12 +6,15 @@ import { DetailDrawer } from "./components/DetailDrawer";
 import { StatusBar } from "./components/StatusBar";
 import { LogViewer } from "./components/LogViewer";
 import { SettingsDialog } from "./components/SettingsDialog";
+import { AboutDialog } from "./components/AboutDialog";
 import { TunnelTestPanel } from "./components/TunnelTestPanel";
 import { useStore, defaultScanOptions } from "./store";
 import {
+  cancelScan,
   loadConfig,
   parseHostLine,
   saveConfig,
+  startScan,
   subscribeScanEvents,
   subscribeTunnelEvents,
   tunnelStatus,
@@ -27,6 +30,9 @@ export default function App() {
     showTunnelTest,
     setShowSettings,
     setShowTunnelTest,
+    setShowAbout,
+    showAbout,
+    setShowLogs,
     setScanOptions,
     setTheme,
     isRunning,
@@ -236,6 +242,85 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scanOptions, isRunning]);
 
+  // Global keyboard shortcuts (Task #24). We attach at the document level
+  // so the operator can drive the app without touching the mouse during a
+  // long scan. We deliberately ignore key events fired from inside text
+  // inputs / textareas (e.g. the corpus filter or settings fields) so
+  // typing "?" into a search box doesn't flash the About dialog.
+  const { scanId } = useStore.getState();
+  useEffect(() => {
+    function isTypingTarget(t: EventTarget | null): boolean {
+      if (!(t instanceof HTMLElement)) return false;
+      const tag = t.tagName;
+      return (
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        t.isContentEditable
+      );
+    }
+    function onKey(e: KeyboardEvent) {
+      // All shortcuts (incl. Esc) are suppressed while focus is in a
+      // text-entry control. Each dialog already mounts its own
+      // close-on-overlay handler and renders an explicit X button, so
+      // dismissing via mouse or focusing-out + Esc still works — we just
+      // don't yank a Settings field out from under a typing user.
+      if (isTypingTarget(e.target)) return;
+      if (e.key === "Escape") {
+        const s = useStore.getState();
+        if (s.showAbout) {
+          s.setShowAbout(false);
+          e.preventDefault();
+          return;
+        }
+        if (s.showSettings) {
+          s.setShowSettings(false);
+          e.preventDefault();
+          return;
+        }
+        if (s.showTunnelTest) {
+          s.setShowTunnelTest(false);
+          e.preventDefault();
+          return;
+        }
+      }
+      const ctrl = e.ctrlKey || e.metaKey;
+      if (ctrl && e.key.toLowerCase() === "r") {
+        // Ctrl/Cmd-R: start scan, or cancel if one is already running.
+        // We swallow the default (browser/Tauri reload) to avoid losing
+        // in-flight scan state.
+        e.preventDefault();
+        const s = useStore.getState();
+        if (s.isRunning && s.scanId) {
+          cancelScan(s.scanId).catch(() => {});
+        } else {
+          startScan(s.scanOptions).catch(() => {});
+        }
+        return;
+      }
+      if (ctrl && e.key === ",") {
+        e.preventDefault();
+        useStore.getState().setShowSettings(true);
+        return;
+      }
+      if (ctrl && e.key.toLowerCase() === "l") {
+        e.preventDefault();
+        const s = useStore.getState();
+        s.setShowLogs(!s.showLogs);
+        return;
+      }
+      if (e.key === "?" || (e.shiftKey && e.key === "/")) {
+        e.preventDefault();
+        useStore.getState().setShowAbout(true);
+        return;
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // scanId in deps so we get a fresh closure if React DevTools tries to
+    // be clever; the effect itself reads everything via getState().
+  }, [scanId]);
+
   return (
     <div className="flex h-screen flex-col bg-surface text-on-surface">
       <Toolbar />
@@ -258,6 +343,7 @@ export default function App() {
       {showTunnelTest && (
         <TunnelTestPanel onClose={() => setShowTunnelTest(false)} />
       )}
+      {showAbout && <AboutDialog onClose={() => setShowAbout(false)} />}
     </div>
   );
 }

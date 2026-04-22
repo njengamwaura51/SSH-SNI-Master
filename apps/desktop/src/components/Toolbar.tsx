@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import {
   FolderOpen,
+  HelpCircle,
   Moon,
   PlayCircle,
   Settings,
@@ -27,6 +28,7 @@ export function Toolbar() {
     setShowLogs,
     setShowSettings,
     setShowTunnelTest,
+    setShowAbout,
     pushLog,
     theme,
     setTheme,
@@ -211,8 +213,17 @@ export function Toolbar() {
 
       <button
         className="btn-ghost"
+        onClick={() => setShowAbout(true)}
+        title="About / keyboard shortcuts (?)"
+        aria-label="About"
+      >
+        <HelpCircle size={16} />
+      </button>
+
+      <button
+        className="btn-ghost"
         onClick={() => setShowSettings(true)}
-        title="Settings"
+        title="Settings (Ctrl+,)"
       >
         <Settings size={16} />
       </button>
