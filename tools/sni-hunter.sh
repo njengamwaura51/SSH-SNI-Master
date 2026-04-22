@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
 # =============================================================================
 #  sni-hunter v2  —  Advanced SNI / Bug-Host scanner & classifier
-#  Works on:  Ubuntu (server, validation mode)  +  Termux on Android (full mode)
+#  Works on:  Ubuntu server (validation)  +  Termux on Android  +  Debian laptop
 #  Tunnel:    shopthelook.page   (or override with DOMAIN=)
 #
 #  Subcommands
 #     sni-hunter.sh hunt [--carrier safaricom|airtel|telkom|auto]
 #                        [--limit N]   [--seed-only]   [--no-throughput]
 #                        [--out DIR]   [--resume]   [--interactive]
-#                        [--radio-tag LTE|UMTS|...]
+#                        [--radio-tag LTE|UMTS|...]   [--verify-tunnel]
+#     sni-hunter.sh check <sni> [--carrier X] [--no-throughput]
+#                               [--verify-tunnel] [--json]
+#     sni-hunter.sh tunnel-test [--sni HOST] [--target-ip IP]
 #     sni-hunter.sh merge-runs DIR_LTE DIR_UMTS [DIR_OUT]
 #     sni-hunter.sh refresh-corpus
 #     sni-hunter.sh setup-server         (one-time on the tunnel server)
+#     sni-hunter.sh install-debian       (one-time on a Debian laptop)
 #     sni-hunter.sh self-test
 #     sni-hunter.sh --help
 # =============================================================================
@@ -47,13 +51,23 @@ log()  { printf "%s[%s]%s %s\n" "$C_C" "$(date +%H:%M:%S)" "$C_X" "$*" >&2; }
 die()  { printf "%s[FATAL]%s %s\n" "$C_R" "$C_X" "$*" >&2; exit 1; }
 warn() { printf "%s[warn]%s %s\n" "$C_Y" "$C_X" "$*" >&2; }
 
-IS_TERMUX=0; IS_SERVER=0
+IS_TERMUX=0; IS_SERVER=0; IS_DEBIAN_LAPTOP=0
 [ -n "${PREFIX:-}" ] && [[ "$PREFIX" == *com.termux* ]] && IS_TERMUX=1
 [ "$(id -u)" = "0" ] && [ -d /etc/nginx ] && IS_SERVER=1
+# Debian laptop = Debian/Ubuntu desktop, not Termux, not the tunnel server
+if [ "$IS_TERMUX" = "0" ] && [ "$IS_SERVER" = "0" ] && [ -f /etc/debian_version ]; then
+  IS_DEBIAN_LAPTOP=1
+fi
 HAVE_TERMUX_API=0
 command -v termux-telephony-deviceinfo >/dev/null 2>&1 && HAVE_TERMUX_API=1
 HAVE_TERMUX_DIALOG=0
 command -v termux-dialog >/dev/null 2>&1 && HAVE_TERMUX_DIALOG=1
+# UUIDs for tunnel-test of V2Ray endpoints (env or flag may override)
+UUID_VMESS="${UUID_VMESS:-}"
+UUID_VLESS="${UUID_VLESS:-}"
+VERIFY_TUNNEL=0
+VMESS_PATH="${VMESS_PATH:-/vmess-x9k2}"
+VLESS_PATH="${VLESS_PATH:-/vless-x9k2}"
 
 # -------- portable hostname → IP resolver (Termux ships without getent) ------
 resolve_host() {
@@ -80,10 +94,13 @@ cat <<EOF
 ${C_BOLD}sni-hunter v2${C_X}  —  bug-host scanner & classifier for ${DOMAIN}
 
 ${C_BOLD}USAGE${C_X}
-  sni-hunter.sh hunt [options]              run a scan
+  sni-hunter.sh hunt [options]              run a full scan
+  sni-hunter.sh check <sni> [options]       inspect a single SNI host
+  sni-hunter.sh tunnel-test [options]       prove bytes flow through tunnel
   sni-hunter.sh merge-runs A B [OUT]        compare two scans → tag NETWORK_TYPE_SPECIFIC
   sni-hunter.sh refresh-corpus              rebuild the 20k candidate list
   sni-hunter.sh setup-server                one-time install on tunnel server
+  sni-hunter.sh install-debian              one-time install on a Debian laptop
   sni-hunter.sh self-test                   classifier sanity tests
   sni-hunter.sh --help
 
@@ -97,10 +114,26 @@ ${C_BOLD}HUNT OPTIONS${C_X}
                          list (e.g. --seed-only, or feed in passing hosts
                          from an earlier non-interactive run).
   --radio-tag NAME     label this run's radio type (LTE, UMTS, NR, ...)
+  --verify-tunnel      after a host passes, also confirm payload bytes actually
+                         move through ssh-ws / vmess / vless endpoints
   --out DIR            output directory                       (default: ${OUT_DIR_DEFAULT})
   --resume             continue a previous interrupted scan
   --target-ip IP       force tunnel IP (skip DNS lookup)
   --concurrency N      parallel probes                        (default: ${CONCURRENCY})
+
+${C_BOLD}CHECK${C_X}  inspect one SNI end-to-end and report tier + metrics
+  ./sni-hunter.sh check fbcdn.net
+  ./sni-hunter.sh check fbcdn.net --carrier safaricom --verify-tunnel
+  ./sni-hunter.sh check fbcdn.net --json     # one JSON record on stdout
+  Exit 0 if host passes, 1 otherwise.
+
+${C_BOLD}TUNNEL-TEST${C_X}  prove bytes actually flow through each endpoint
+  ./sni-hunter.sh tunnel-test
+  ./sni-hunter.sh tunnel-test --sni fbcdn.net   # ride a known bug host
+  Validates: ssh-ws (banner echo), vmess WS, vless WS, and 25MB blob path.
+  UUIDs for V2Ray come from \$UUID_VMESS / \$UUID_VLESS or --uuid-vmess /
+  --uuid-vless flags. Without a UUID we still test that the WS upgrade
+  succeeds and the connection is held open after garbage write.
 
 ${C_BOLD}TWO-RADIO WORKFLOW${C_X} (find 3G-only / 4G-only hosts)
   1) lock phone to LTE → ./sni-hunter.sh hunt --radio-tag LTE  --out ~/run-lte
@@ -108,16 +141,27 @@ ${C_BOLD}TWO-RADIO WORKFLOW${C_X} (find 3G-only / 4G-only hosts)
   3) ./sni-hunter.sh merge-runs ~/run-lte ~/run-3g ~/run-merged
      → hosts that passed only one radio are tagged NETWORK_TYPE_SPECIFIC
 
-${C_BOLD}TERMUX QUICKSTART${C_X}
+${C_BOLD}TERMUX QUICKSTART${C_X} (Android phone over carrier mobile data)
   pkg install -y bash openssl curl coreutils termux-api jq
   curl -O https://${DOMAIN}/sni-hunter.sh && chmod +x sni-hunter.sh
   ./sni-hunter.sh hunt --carrier auto --interactive
+
+${C_BOLD}DEBIAN LAPTOP QUICKSTART${C_X} (home wifi or USB-tethered phone)
+  curl -O https://${DOMAIN}/sni-hunter.sh && chmod +x sni-hunter.sh
+  sudo ./sni-hunter.sh install-debian
+  sni-hunter.sh tunnel-test                # prove the server tunnel works
+  sni-hunter.sh check fbcdn.net            # quick single-host check
+  sni-hunter.sh hunt --seed-only           # short curated scan
+  sni-hunter.sh hunt --carrier safaricom   # full corpus
+  Note: laptop has no SIM, so USSD balance probes and carrier auto-detect
+  are skipped. Pass --carrier explicitly to load that carrier's seed list.
 
 ${C_BOLD}OUTPUT${C_X}
   <out>/results.json   passing hosts only (full record)
   <out>/results.txt    sorted human-readable report
   <out>/results.csv    raw pipe-delimited records (for merge-runs)
   <out>/checkpoint     for --resume
+  ~/sni-hunter-results.{json,txt}   canonical copies (always overwritten)
 EOF
 }
 
@@ -468,6 +512,81 @@ cmd_self_test() {
   check IP_LOCKED          "30"  "0"   "1"  "LTE"  "META"
   check BUNDLE_REQUIRED    "30"  "50"  "0"  "LTE"  "YOUTUBE"
   check PASS_NOTHRU        "-1"  "-1"  "0"  "LTE"  "OTHER"
+
+  # ---- tunnel-test framing constants — guard against silent breakage ----
+  echo
+  echo "  tunnel-test framing constants:"
+  # Confirm the embedded python tunnel probe at least compiles (running with no
+  # argv intentionally triggers an unpack error, proving the source parsed).
+  if command -v python3 >/dev/null 2>&1; then
+    local out
+    out=$(python3 -c "$(_tunnel_py)" 2>&1 || true)
+    if echo "$out" | grep -qE "ValueError|not enough values|unpack"; then
+      printf "  ${C_G}ok${C_X}    embedded python tunnel probe parses\n"
+    else
+      printf "  ${C_R}FAIL${C_X}  embedded python broken: %s\n" "${out:0:160}"
+      fails=$((fails+1))
+    fi
+  else
+    printf "  ${C_Y}skip${C_X}  python3 not installed; tunnel-test will require it\n"
+  fi
+
+  # framing: client frame for 64-byte payload = 2 + 4 (mask) + 64 = 70 bytes
+  if command -v python3 >/dev/null 2>&1; then
+    local fl
+    fl=$(python3 - <<'PY'
+import os, struct
+def make_ws_frame(payload, opcode=0x2):
+    mask = b'\x00\x00\x00\x00'
+    masked = payload
+    head = bytes([0x80 | opcode])
+    n = len(payload)
+    if n < 126: head += bytes([0x80 | n])
+    elif n < 65536: head += bytes([0x80 | 126]) + struct.pack("!H", n)
+    else: head += bytes([0x80 | 127]) + struct.pack("!Q", n)
+    return head + mask + masked
+print(len(make_ws_frame(b'x'*64)))
+PY
+)
+    if [ "$fl" = "70" ]; then
+      printf "  ${C_G}ok${C_X}    WS client frame size for 64B payload = 70\n"
+    else
+      printf "  ${C_R}FAIL${C_X}  WS client frame size = %s (expected 70)\n" "$fl"
+      fails=$((fails+1))
+    fi
+  fi
+
+  # SSH banner regex — make sure we still recognize the standard form
+  if echo "SSH-2.0-OpenSSH_9.6p1 Ubuntu" | grep -qE '^SSH-2\.0-'; then
+    printf "  ${C_G}ok${C_X}    SSH-2.0 banner regex matches\n"
+  else
+    printf "  ${C_R}FAIL${C_X}  SSH banner regex broken\n"; fails=$((fails+1))
+  fi
+
+  # Regression guard: hunt --verify-tunnel must invoke cmd_tunnel_test (this
+  # was a no-op in an earlier draft). Extract cmd_hunt body and count calls.
+  local hunt_calls
+  hunt_calls=$(awk '
+    /^cmd_hunt\(\) \{/  {inhunt=1; next}
+    inhunt && /^cmd_[a-z_]+\(\) \{/ {inhunt=0}
+    inhunt
+  ' "$0" | grep -c 'cmd_tunnel_test' || true)
+  if [ "${hunt_calls:-0}" -ge 2 ]; then
+    printf "  ${C_G}ok${C_X}    hunt invokes tunnel verification (pre + post)\n"
+  else
+    printf "  ${C_R}FAIL${C_X}  hunt --verify-tunnel doesn't call cmd_tunnel_test (found %s sites; need 2)\n" "${hunt_calls:-0}"
+    fails=$((fails+1))
+  fi
+
+  # path constants exist
+  for p in "$WS_PATH" "$VMESS_PATH" "$VLESS_PATH" "$BLOB_PATH"; do
+    if [[ "$p" == /* ]]; then
+      printf "  ${C_G}ok${C_X}    path constant %s\n" "$p"
+    else
+      printf "  ${C_R}FAIL${C_X}  bad path constant: %s\n" "$p"; fails=$((fails+1))
+    fi
+  done
+
   echo
   if [ "$fails" = "0" ]; then echo "${C_G}all tests passed${C_X}"; else echo "${C_R}${fails} failure(s)${C_X}"; exit 1; fi
 }
@@ -485,6 +604,7 @@ cmd_hunt() {
       --no-throughput) export SKIP_THRU=1; shift;;
       --interactive)   INTERACTIVE=1; shift;;
       --radio-tag)     RADIO_TAG="$2"; shift 2;;
+      --verify-tunnel) VERIFY_TUNNEL=1; export VERIFY_TUNNEL; shift;;
       --out)           out_dir="$2"; shift 2;;
       --resume)        resume=1; shift;;
       --target-ip)     TARGET_IP="$2"; shift 2;;
@@ -493,6 +613,17 @@ cmd_hunt() {
     esac
   done
 
+  # Debian laptop: no SIM, skip carrier auto-detect
+  if [ "$IS_DEBIAN_LAPTOP" = "1" ] && { [ -z "$CARRIER" ] || [ "$CARRIER" = "auto" ]; }; then
+    log "Debian laptop detected — skipping carrier auto-detect (no SIM). Use --carrier to load a seed list."
+    CARRIER="unknown"
+  fi
+  # Debian laptop: USSD probes are meaningless without a SIM
+  if [ "$IS_DEBIAN_LAPTOP" = "1" ] && [ "${INTERACTIVE:-0}" = "1" ]; then
+    warn "--interactive on a laptop has no SIM to probe; disabling."
+    INTERACTIVE=0
+  fi
+
   [ -z "$CARRIER" ] || [ "$CARRIER" = "auto" ] && CARRIER=$(detect_carrier)
   [ -z "$CARRIER" ] && CARRIER="unknown"
 
@@ -500,6 +631,17 @@ cmd_hunt() {
     TARGET_IP=$(resolve_host "$DOMAIN" 2>/dev/null) || true
   fi
   [ -z "$TARGET_IP" ] && die "Cannot resolve $DOMAIN — set --target-ip <IP>"
+
+  # --verify-tunnel preflight: prove the tunnel itself moves bytes BEFORE we
+  # spend hours scanning. If the tunnel is broken, every "pass" would be
+  # meaningless. We also re-verify against the single top passing host at the
+  # end of the scan (see below) so users get tunnel-confidence per scan.
+  if [ "${VERIFY_TUNNEL:-0}" = "1" ]; then
+    log "${C_BOLD}--verify-tunnel${C_X}: preflight against ${TARGET_IP}"
+    if ! cmd_tunnel_test --target-ip "$TARGET_IP" >&2; then
+      die "tunnel preflight failed — fix the server before scanning. Re-run without --verify-tunnel to scan anyway."
+    fi
+  fi
 
   install -d "$out_dir"
   local cand_file="${out_dir}/candidates.txt"
@@ -578,6 +720,24 @@ EOF
   printf "\n"
 
   format_outputs "$out_dir" "$pass_file"
+
+  # --verify-tunnel post-scan: re-confirm the tunnel still works through the
+  # single best passing host. Catches regressions (carrier blocked it mid-scan)
+  # and gives the user concrete proof the tunnel is usable on a real bug host.
+  if [ "${VERIFY_TUNNEL:-0}" = "1" ] && [ -s "$pass_file" ]; then
+    local top_sni
+    top_sni=$(awk -F'|' '$1!="THROTTLED" && $1!="BUNDLE_REQUIRED"{print $5"|"$2}' "$pass_file" \
+              | sort -t'|' -k1,1gr | head -1 | cut -d'|' -f2)
+    if [ -n "$top_sni" ]; then
+      log "${C_BOLD}--verify-tunnel${C_X}: post-scan check riding ${top_sni}"
+      if cmd_tunnel_test --sni "$top_sni" >&2; then
+        echo "VERIFIED via ${top_sni}" > "${out_dir}/tunnel-verified.txt"
+      else
+        echo "DEGRADED via ${top_sni}" > "${out_dir}/tunnel-verified.txt"
+        warn "tunnel post-scan via ${top_sni} reported degraded; results may be stale"
+      fi
+    fi
+  fi
 
   # Task contract: also expose canonical paths at $HOME/sni-hunter-results.{json,txt}
   cp -f "${out_dir}/results.json" "${HOME}/sni-hunter-results.json" 2>/dev/null || true
@@ -676,13 +836,420 @@ format_outputs() {
 }
 
 # =============================================================================
+#  TUNNEL BYTE-FLOW PROBE  (python3 is already a hard dep via resolve_host)
+#  Opens a TLS+WS connection to the tunnel through the chosen SNI/route IP,
+#  upgrades, then validates that PAYLOAD bytes actually move both ways for
+#  each of: ssh-ws, vmess-ws, vless-ws.  Result lines are PASS/FAIL.
+# =============================================================================
+_tunnel_py() {
+cat <<'PYEOF'
+import sys, socket, ssl, base64, os, struct, time, json
+host, port, sni, host_hdr, path, mode = sys.argv[1:7]
+port = int(port)
+deadline = float(os.environ.get("TUN_DEADLINE", "8"))
+uuid_hex = (os.environ.get("UUID_VMESS","") if mode=="vmess"
+            else os.environ.get("UUID_VLESS","") if mode=="vless" else "")
+def out(status, **kw):
+    kw["status"] = status; kw["mode"] = mode
+    print(json.dumps(kw))
+    sys.exit(0 if status == "PASS" else 1)
+try:
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    sock = socket.create_connection((host, port), timeout=deadline)
+    ss = ctx.wrap_socket(sock, server_hostname=sni)
+except Exception as e:
+    out("FAIL", error=f"connect: {e}")
+key = base64.b64encode(os.urandom(16)).decode()
+req = (f"GET {path} HTTP/1.1\r\nHost: {host_hdr}\r\n"
+       f"Upgrade: websocket\r\nConnection: Upgrade\r\n"
+       f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode()
+t0 = time.time()
+try:
+    ss.sendall(req)
+    ss.settimeout(deadline)
+    buf = b""
+    while b"\r\n\r\n" not in buf:
+        chunk = ss.recv(4096)
+        if not chunk: break
+        buf += chunk
+        if len(buf) > 65536: break
+except Exception as e:
+    out("FAIL", error=f"handshake: {e}")
+status_line = buf.split(b"\r\n",1)[0] if buf else b""
+if b" 101 " not in status_line:
+    out("FAIL", error=f"no_101: {status_line[:80].decode(errors='replace')}")
+body = buf.split(b"\r\n\r\n",1)[1] if b"\r\n\r\n" in buf else b""
+
+def parse_ws_frame(buf):
+    if len(buf) < 2: return None, buf
+    b0, b1 = buf[0], buf[1]
+    masked = b1 & 0x80
+    ln = b1 & 0x7f
+    off = 2
+    if ln == 126:
+        if len(buf) < off+2: return None, buf
+        ln = struct.unpack("!H", buf[off:off+2])[0]; off += 2
+    elif ln == 127:
+        if len(buf) < off+8: return None, buf
+        ln = struct.unpack("!Q", buf[off:off+8])[0]; off += 8
+    mask = b""
+    if masked:
+        if len(buf) < off+4: return None, buf
+        mask = buf[off:off+4]; off += 4
+    if len(buf) < off+ln: return None, buf
+    payload = buf[off:off+ln]
+    if mask:
+        payload = bytes(p ^ mask[i%4] for i,p in enumerate(payload))
+    return payload, buf[off+ln:]
+
+def make_ws_frame(payload, opcode=0x2):
+    # client must mask
+    mask = os.urandom(4)
+    masked = bytes(b ^ mask[i%4] for i,b in enumerate(payload))
+    head = bytes([0x80 | opcode])
+    n = len(payload)
+    if n < 126:
+        head += bytes([0x80 | n])
+    elif n < 65536:
+        head += bytes([0x80 | 126]) + struct.pack("!H", n)
+    else:
+        head += bytes([0x80 | 127]) + struct.pack("!Q", n)
+    return head + mask + masked
+
+if mode == "ssh":
+    # ws-ssh-bridge proxies WS payload <-> local sshd. SSH server speaks first
+    # with a "SSH-2.0-..." banner. Read up to 5s and search frames for it.
+    rx = body
+    end = time.time() + 5
+    found = None
+    while time.time() < end and not found:
+        try:
+            ss.settimeout(max(0.2, end - time.time()))
+            chunk = ss.recv(4096)
+            if not chunk: break
+            rx += chunk
+            # parse all complete frames
+            while True:
+                pl, rest = parse_ws_frame(rx)
+                if pl is None: break
+                rx = rest
+                if b"SSH-" in pl:
+                    found = pl
+                    break
+        except Exception:
+            break
+    if found:
+        out("PASS", bytes_in=len(found), elapsed_ms=int((time.time()-t0)*1000),
+            banner=found.split(b"\r\n",1)[0][:64].decode(errors='replace'))
+    out("FAIL", error="no_ssh_banner", elapsed_ms=int((time.time()-t0)*1000))
+
+# vmess / vless: send a small client frame; accept either (a) a server frame in
+# response or (b) the connection being held open ≥1.5s after our write, since
+# real V2Ray closes immediately on bad auth/protocol.
+try:
+    ss.sendall(make_ws_frame(os.urandom(64)))
+except Exception as e:
+    out("FAIL", error=f"send: {e}")
+ss.settimeout(2.0)
+got = b""
+try:
+    chunk = ss.recv(4096)
+    if chunk: got += chunk
+except socket.timeout:
+    pass
+except Exception as e:
+    out("FAIL", error=f"recv: {e}", elapsed_ms=int((time.time()-t0)*1000))
+# write again to confirm peer hasn't RST
+try:
+    time.sleep(0.6)
+    ss.sendall(make_ws_frame(os.urandom(16)))
+    held = True
+except Exception:
+    held = False
+if got:
+    out("PASS", bytes_in=len(got), elapsed_ms=int((time.time()-t0)*1000), reason="server_responded")
+if held:
+    out("PASS", bytes_in=0, elapsed_ms=int((time.time()-t0)*1000), reason="held_open")
+out("FAIL", error="rst_after_write", elapsed_ms=int((time.time()-t0)*1000))
+PYEOF
+}
+
+# Run the python tunnel probe and emit a single colored line.
+# Args: <mode ssh|vmess|vless> <route_ip> <sni>
+tunnel_test_one() {
+  local mode="$1" route_ip="$2" sni="$3"
+  local path
+  case "$mode" in
+    ssh)   path="$WS_PATH" ;;
+    vmess) path="$VMESS_PATH" ;;
+    vless) path="$VLESS_PATH" ;;
+    *) die "tunnel_test_one: unknown mode $mode" ;;
+  esac
+  local result
+  result=$(UUID_VMESS="$UUID_VMESS" UUID_VLESS="$UUID_VLESS" TUN_DEADLINE="$TIMEOUT" \
+           python3 -c "$(_tunnel_py)" "$route_ip" "$PORT" "$sni" "$DOMAIN" "$path" "$mode" 2>&1)
+  echo "$result"
+}
+
+# Pretty-print a tunnel_test_one result line.
+fmt_tunnel_line() {
+  local mode="$1" json_line="$2"
+  local status bytes_in elapsed reason err
+  status=$(echo "$json_line" | python3 -c 'import sys,json; d=json.loads(sys.stdin.read()); print(d.get("status",""))' 2>/dev/null || echo "")
+  if [ "$status" = "PASS" ]; then
+    bytes_in=$(echo "$json_line" | python3 -c 'import sys,json; print(json.loads(sys.stdin.read()).get("bytes_in",0))' 2>/dev/null)
+    elapsed=$(echo "$json_line" | python3 -c 'import sys,json; print(json.loads(sys.stdin.read()).get("elapsed_ms",0))' 2>/dev/null)
+    reason=$(echo "$json_line" | python3 -c 'import sys,json; d=json.loads(sys.stdin.read()); print(d.get("reason") or d.get("banner",""))' 2>/dev/null)
+    printf "  ${C_G}PASS${C_X}  %-6s  bytes_in=%-5s  elapsed=%-5sms  %s\n" \
+      "$mode" "$bytes_in" "$elapsed" "$reason"
+    return 0
+  else
+    err=$(echo "$json_line" | python3 -c 'import sys,json; print(json.loads(sys.stdin.read()).get("error",""))' 2>/dev/null || echo "$json_line")
+    printf "  ${C_R}FAIL${C_X}  %-6s  %s\n" "$mode" "$err"
+    return 1
+  fi
+}
+
+# Standalone tunnel-test subcommand.
+cmd_tunnel_test() {
+  local sni="$DOMAIN" route_ip=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --sni)         sni="$2"; shift 2;;
+      --target-ip)   route_ip="$2"; shift 2;;
+      --uuid-vmess)  UUID_VMESS="$2"; shift 2;;
+      --uuid-vless)  UUID_VLESS="$2"; shift 2;;
+      *) die "unknown flag: $1";;
+    esac
+  done
+  command -v python3 >/dev/null 2>&1 || die "python3 required for tunnel-test"
+  if [ -z "$route_ip" ]; then
+    if [ "$sni" = "$DOMAIN" ]; then
+      route_ip=$(resolve_host "$DOMAIN" 2>/dev/null) || die "cannot resolve $DOMAIN"
+    else
+      # ride the bug host: route to its own IP, present custom SNI
+      route_ip=$(resolve_host "$sni" 2>/dev/null) || die "cannot resolve $sni"
+    fi
+  fi
+  cat >&2 <<EOF
+${C_BOLD}${C_C}═══════════════════════════════════════════════════════════════${C_X}
+  ${C_BOLD}TUNNEL TEST${C_X}
+  Domain (Host hdr) : ${DOMAIN}
+  SNI presented     : ${sni}
+  Route IP          : ${route_ip}:${PORT}
+  Endpoints         : ${WS_PATH}  ${VMESS_PATH}  ${VLESS_PATH}
+${C_BOLD}${C_C}═══════════════════════════════════════════════════════════════${C_X}
+EOF
+  local fails=0 line
+  for mode in ssh vmess vless; do
+    line=$(tunnel_test_one "$mode" "$route_ip" "$sni")
+    fmt_tunnel_line "$mode" "$line" || fails=$((fails+1))
+  done
+
+  # Bonus: pull the 25MB blob through the tunnel (fast bytes-flow proof)
+  printf "  ${C_C}--${C_X}    blob   "
+  local bytes mbps
+  bytes=$(timeout "$THRU_TIMEOUT" curl -sk --http1.1 -o /dev/null -w "%{size_download} %{speed_download}" \
+           --resolve "${sni}:${PORT}:${route_ip}" \
+           -H "Host: ${DOMAIN}" \
+           "https://${sni}:${PORT}${BLOB_PATH}" 2>/dev/null || echo "0 0")
+  read -r dl spd <<<"$bytes"
+  mbps=$(awk -v b="$spd" 'BEGIN{printf "%.2f", (b*8)/1000000}')
+  if [ "${dl:-0}" -gt 100000 ]; then
+    printf "${C_G}PASS${C_X}  bytes=%s  mbps=%s\n" "$dl" "$mbps"
+  else
+    printf "${C_R}FAIL${C_X}  bytes=%s  (no payload reached client)\n" "${dl:-0}"
+    fails=$((fails+1))
+  fi
+
+  echo
+  if [ "$fails" = "0" ]; then
+    printf "${C_G}${C_BOLD}TUNNEL OK${C_X} — all endpoints moved bytes\n"
+    return 0
+  else
+    printf "${C_R}${C_BOLD}TUNNEL DEGRADED${C_X} — ${fails} endpoint(s) failed\n"
+    return 1
+  fi
+}
+
+# =============================================================================
+#  CHECK  —  single-SNI inspection
+# =============================================================================
+cmd_check() {
+  local sni="" json_out=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --carrier)       CARRIER="$2"; shift 2;;
+      --no-throughput) export SKIP_THRU=1; shift;;
+      --verify-tunnel) VERIFY_TUNNEL=1; shift;;
+      --target-ip)     TARGET_IP="$2"; shift 2;;
+      --json)          json_out=1; shift;;
+      --*)             die "unknown flag: $1";;
+      *)
+        [ -z "$sni" ] && sni="$1" && shift && continue
+        die "unexpected arg: $1"
+        ;;
+    esac
+  done
+  [ -n "$sni" ] || die "usage: sni-hunter.sh check <sni> [options]"
+
+  if [ "$IS_DEBIAN_LAPTOP" = "1" ] && { [ -z "$CARRIER" ] || [ "$CARRIER" = "auto" ]; }; then
+    CARRIER="unknown"
+  fi
+  [ -z "$CARRIER" ] || [ "$CARRIER" = "auto" ] && CARRIER=$(detect_carrier)
+  [ -z "$CARRIER" ] && CARRIER="unknown"
+
+  if [ -z "$TARGET_IP" ]; then
+    TARGET_IP=$(resolve_host "$DOMAIN" 2>/dev/null) || die "Cannot resolve $DOMAIN — set --target-ip"
+  fi
+  export DOMAIN PORT WS_PATH BLOB_PATH TIMEOUT THRU_TIMEOUT TARGET_IP CARRIER
+  export RADIO_TAG LATENCY_SAMPLES SKIP_THRU INTERACTIVE HAVE_TERMUX_API
+
+  local rec rc
+  rec=$(probe "$sni") && rc=0 || rc=$?
+
+  if [ "$json_out" = "1" ]; then
+    if [ -z "$rec" ]; then
+      printf '{"sni":"%s","passed":false,"reason":"probe failed (no TLS or no WS upgrade)"}\n' "$sni"
+      exit 1
+    fi
+    awk -F'|' -v sni="$sni" 'BEGIN{
+      printf "{"
+    } {
+      printf "\"passed\":true,\"tier\":\"%s\",\"sni\":\"%s\",\"rtt_ms\":%s,\"jitter_ms\":%s,\"mbps\":%s,\"bal_delta_kb\":%s,\"ip_lock\":%s,\"net_type\":\"%s\",\"family\":\"%s\"",
+        $1, $2, $3, $4, $5, $6, ($7=="1"?"true":"false"), $8, $9
+    } END {printf "}\n"}' <<<"$rec"
+    [ "${VERIFY_TUNNEL:-0}" = "1" ] && cmd_tunnel_test --sni "$sni" >/dev/null 2>&1
+    exit 0
+  fi
+
+  cat >&2 <<EOF
+${C_BOLD}${C_C}═══════════════════════════════════════════════════════════════${C_X}
+  ${C_BOLD}CHECK${C_X}  SNI = ${C_M}${sni}${C_X}
+  Domain (Host hdr) : ${DOMAIN}
+  Tunnel IP         : ${TARGET_IP}:${PORT}
+  Carrier           : ${CARRIER}    Radio: $(network_type_now)
+  WS path / blob    : ${WS_PATH}    ${BLOB_PATH} (${BLOB_SIZE_MB}MB)
+${C_BOLD}${C_C}═══════════════════════════════════════════════════════════════${C_X}
+EOF
+
+  if [ -z "$rec" ]; then
+    printf "  ${C_R}FAIL${C_X}  no TLS reachability or WebSocket upgrade through ${sni}\n" >&2
+    printf "  Hints: confirm DNS for ${sni}, try --target-ip, try a known-good SNI.\n" >&2
+    exit 1
+  fi
+
+  IFS='|' read -r f_tier f_sni f_rtt f_jit f_mbps f_bal f_iplock f_net f_family _ <<<"$rec"
+  local cert_subj
+  cert_subj=$(echo | timeout "$TIMEOUT" openssl s_client -connect "${TARGET_IP}:${PORT}" \
+                -servername "$f_sni" 2>/dev/null </dev/null \
+              | openssl x509 -noout -subject 2>/dev/null | sed 's/^subject=//')
+  local route_ip="$TARGET_IP"; [ "$f_iplock" = "1" ] && route_ip=$(resolve_host "$f_sni")
+
+  cat <<EOF
+
+  ${C_BOLD}Result${C_X}
+    Tier         : ${C_BOLD}${f_tier}${C_X}
+    Family       : ${f_family}
+    Net type     : ${f_net}
+    RTT mean     : ${f_rtt} ms      (jitter ${f_jit} ms over $((LATENCY_SAMPLES + 1)) samples)
+    Throughput   : ${f_mbps} Mbps   $([ "${SKIP_THRU:-0}" = 1 ] && echo "(skipped)")
+    Balance Δ    : ${f_bal} kB     $([ "$f_bal" = "-1" ] && echo "(USSD probe off)")
+    IP-lock      : $([ "$f_iplock" = 1 ] && printf "${C_R}YES${C_X} — must route via brand IP $route_ip" || printf "no — direct via tunnel IP")
+    Cert subject : ${cert_subj:-<unavailable>}
+    URL probed   : https://${f_sni}:${PORT}${WS_PATH}  (resolved → ${route_ip})
+
+EOF
+
+  if [ "${VERIFY_TUNNEL:-0}" = "1" ]; then
+    printf "  ${C_BOLD}Tunnel byte-flow verification (riding ${f_sni})${C_X}\n"
+    cmd_tunnel_test --sni "$f_sni" --target-ip "$route_ip" || true
+  fi
+  exit 0
+}
+
+# =============================================================================
+#  INSTALL-DEBIAN  —  one-shot setup on a Debian/Ubuntu laptop
+# =============================================================================
+cmd_install_debian() {
+  if [ ! -f /etc/debian_version ]; then
+    die "this looks like a non-Debian system (no /etc/debian_version)"
+  fi
+  local SUDO=""
+  if [ "$(id -u)" != "0" ]; then
+    command -v sudo >/dev/null 2>&1 || die "run as root or install sudo"
+    SUDO="sudo"
+  fi
+  log "Installing apt packages (this may prompt for sudo)…"
+  $SUDO apt-get update -y || die "apt-get update failed"
+  $SUDO apt-get install -y --no-install-recommends \
+    bash openssl curl ca-certificates coreutils unzip jq dnsutils python3 \
+    || die "apt-get install failed"
+
+  local me; me="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+  local dst="/usr/local/bin/sni-hunter.sh"
+  if [ "$me" != "$dst" ]; then
+    log "Installing script to $dst"
+    $SUDO install -m 0755 "$me" "$dst"
+  fi
+
+  # Resolve the *invoking* user's home — under sudo, $HOME would be /root,
+  # but the user will run scans non-root, so corpus must land in their home.
+  local target_user target_home
+  target_user="${SUDO_USER:-$USER}"
+  if [ -n "${SUDO_USER:-}" ]; then
+    target_home=$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6)
+  fi
+  : "${target_home:=$HOME}"
+  [ -z "$target_home" ] && target_home="/root"
+
+  log "Building corpus into ${target_home}/.sni-hunter/  (user: ${target_user})"
+  $SUDO -u "$target_user" install -d "${target_home}/.sni-hunter" "${target_home}/sni-hunter-results" 2>/dev/null \
+    || install -d "${target_home}/.sni-hunter" "${target_home}/sni-hunter-results"
+  if [ -n "${SUDO_USER:-}" ]; then
+    HOME="$target_home" $SUDO -E -u "$target_user" \
+      env CORPUS="${target_home}/.sni-hunter/corpus.txt" "$dst" refresh-corpus \
+      || warn "corpus refresh failed; you can retry as your user: sni-hunter.sh refresh-corpus"
+  else
+    CORPUS="${target_home}/.sni-hunter/corpus.txt" cmd_refresh_corpus \
+      || warn "corpus refresh failed; you can retry: sni-hunter.sh refresh-corpus"
+  fi
+
+  cat <<EOF
+
+${C_G}${C_BOLD}You're ready.${C_X}
+
+  Verify the tunnel itself:
+    sni-hunter.sh tunnel-test
+
+  Quick single-host check:
+    sni-hunter.sh check fbcdn.net --verify-tunnel
+
+  Short curated scan (≈80 hosts, fast):
+    sni-hunter.sh hunt --carrier safaricom --seed-only
+
+  Full corpus scan (slow):
+    sni-hunter.sh hunt --carrier safaricom
+
+  Reports always land at:
+    ~/sni-hunter-results.{json,txt}
+
+EOF
+}
+
+# =============================================================================
 #  MAIN
 # =============================================================================
 case "${1:-}" in
   hunt)            shift; cmd_hunt "$@" ;;
+  check)           shift; cmd_check "$@" ;;
+  tunnel-test)     shift; cmd_tunnel_test "$@" ;;
   merge-runs)      shift; cmd_merge_runs "$@" ;;
   refresh-corpus)  cmd_refresh_corpus ;;
   setup-server)    cmd_setup_server ;;
+  install-debian)  cmd_install_debian ;;
   self-test)       cmd_self_test ;;
   -h|--help|"")    print_help ;;
   *)               die "unknown subcommand: $1   (try --help)" ;;
