@@ -55,6 +55,23 @@ command -v termux-telephony-deviceinfo >/dev/null 2>&1 && HAVE_TERMUX_API=1
 HAVE_TERMUX_DIALOG=0
 command -v termux-dialog >/dev/null 2>&1 && HAVE_TERMUX_DIALOG=1
 
+# -------- portable hostname → IP resolver (Termux ships without getent) ------
+resolve_host() {
+  local h="$1" ip
+  ip=$(getent hosts "$h" 2>/dev/null | awk '{print $1; exit}')
+  [ -n "$ip" ] && { echo "$ip"; return; }
+  ip=$(drill "$h" A 2>/dev/null | awk '/^[^;].*\sA\s/ {print $5; exit}')
+  [ -n "$ip" ] && { echo "$ip"; return; }
+  ip=$(dig +short "$h" 2>/dev/null | grep -E '^[0-9.]+$' | head -1)
+  [ -n "$ip" ] && { echo "$ip"; return; }
+  ip=$(nslookup "$h" 2>/dev/null | awk '/^Address: / && !/#/ {print $2; exit}')
+  [ -n "$ip" ] && { echo "$ip"; return; }
+  ip=$(python3 -c "import socket,sys; print(socket.gethostbyname('$h'))" 2>/dev/null)
+  [ -n "$ip" ] && { echo "$ip"; return; }
+  return 1
+}
+export -f resolve_host
+
 # =============================================================================
 #  HELP
 # =============================================================================
@@ -75,8 +92,10 @@ ${C_BOLD}HUNT OPTIONS${C_X}
   --limit N            cap candidate count
   --seed-only          only scan built-in carrier seeds (~80 hosts, fast)
   --no-throughput      skip the slow MB-pull stage
-  --interactive        prompt for USSD balance pre/post each batch
-                         (enables BUNDLE_REQUIRED detection)
+  --interactive        per-host USSD balance probe (enables BUNDLE_REQUIRED).
+                         Forces concurrency=1. Best used on a curated short
+                         list (e.g. --seed-only, or feed in passing hosts
+                         from an earlier non-interactive run).
   --radio-tag NAME     label this run's radio type (LTE, UMTS, NR, ...)
   --out DIR            output directory                       (default: ${OUT_DIR_DEFAULT})
   --resume             continue a previous interrupted scan
@@ -319,7 +338,7 @@ probe() {
   local iplock=0
   if [ -z "$rtt_direct" ]; then
     local brand_ip
-    brand_ip=$(getent hosts "$sni" 2>/dev/null | awk '{print $1; exit}')
+    brand_ip=$(resolve_host "$sni" 2>/dev/null) || brand_ip=""
     if [ -n "$brand_ip" ] && [ "$brand_ip" != "$TARGET_IP" ]; then
       rtt_via_brand=$(ws_probe_via_ip "$sni" "$brand_ip") || rtt_via_brand=""
       if [ -n "$rtt_via_brand" ]; then
@@ -333,7 +352,7 @@ probe() {
   fi
 
   local rtt_first; rtt_first="${rtt_direct:-$rtt_via_brand}"
-  local route_ip="$TARGET_IP"; [ "$iplock" = "1" ] && route_ip=$(getent hosts "$sni" | awk '{print $1; exit}')
+  local route_ip="$TARGET_IP"; [ "$iplock" = "1" ] && route_ip=$(resolve_host "$sni")
 
   # ---- stage 3: latency / jitter — N samples ----
   local samples=""; local i s
@@ -359,9 +378,26 @@ probe() {
     mbps=$(awk -v b="$bytes" 'BEGIN{printf "%.2f", (b*8)/1000000}')
   fi
 
-  # ---- stage 5: balance delta is sampled per-batch, not per-host (too slow).
-  #             Use the global value set by hunt() before each batch.
-  local bal_delta="${BAL_DELTA_KB:--1}"
+  # ---- stage 5: per-host balance delta.
+  # Done synchronously here when --interactive is on (CONCURRENCY=1 is enforced
+  # in that mode). Without --interactive, delta = -1 (unknown).
+  local bal_delta=-1
+  if [ "${INTERACTIVE:-0}" = "1" ]; then
+    local bp ba
+    bp=$(read_balance_kb "PRE  $sni") || bp=-1
+    # do a small targeted transfer to attribute charge to THIS host
+    if [ "${SKIP_THRU:-0}" != "1" ]; then
+      timeout "$THRU_TIMEOUT" curl -sk --http1.1 -o /dev/null \
+        --resolve "${sni}:${PORT}:${route_ip}" \
+        -H "Host: ${DOMAIN}" \
+        "https://${sni}:${PORT}${BLOB_PATH}" >/dev/null 2>&1 || true
+    fi
+    ba=$(read_balance_kb "POST $sni") || ba=-1
+    if [ "$bp" -ge 0 ] && [ "$ba" -ge 0 ]; then
+      bal_delta=$(( bp - ba ))
+      [ "$bal_delta" -lt 0 ] && bal_delta=0
+    fi
+  fi
 
   # ---- stage 6: classification ----
   local tier
@@ -461,7 +497,7 @@ cmd_hunt() {
   [ -z "$CARRIER" ] && CARRIER="unknown"
 
   if [ -z "$TARGET_IP" ]; then
-    TARGET_IP=$(getent hosts "$DOMAIN" 2>/dev/null | awk '{print $1; exit}')
+    TARGET_IP=$(resolve_host "$DOMAIN" 2>/dev/null) || true
   fi
   [ -z "$TARGET_IP" ] && die "Cannot resolve $DOMAIN — set --target-ip <IP>"
 
@@ -510,17 +546,17 @@ ${C_BOLD}${C_C}═════════════════════�
 ${C_BOLD}${C_C}═══════════════════════════════════════════════════════════════${C_X}
 EOF
 
-  # Balance probe runs ONCE around each batch (per-host USSD would be insane).
-  local BATCH=200
-  local bal_pre=-1 bal_post=-1
+  # In interactive (per-host USSD) mode, force serial scanning so balance
+  # deltas can be attributed to one host at a time.
   if [ "$INTERACTIVE" = "1" ]; then
-    bal_pre=$(read_balance_kb "PRE")
+    CONCURRENCY=1
+    log "Interactive mode: forcing concurrency=1 for per-host balance attribution"
   fi
-  export BAL_DELTA_KB=-1
 
   export DOMAIN PORT WS_PATH BLOB_PATH TIMEOUT THRU_TIMEOUT TARGET_IP CARRIER
-  export RADIO_TAG LATENCY_SAMPLES SKIP_THRU HAVE_TERMUX_API
-  export -f probe ws_probe_via_ip classify_family classify_tier network_type_now
+  export RADIO_TAG LATENCY_SAMPLES SKIP_THRU HAVE_TERMUX_API INTERACTIVE
+  export -f probe ws_probe_via_ip classify_family classify_tier
+  export -f network_type_now read_balance_kb ussd_code_for
 
   local started; started=$(date +%s); local n=0
   ( while [ ! -f "${out_dir}/.done" ]; do
@@ -541,29 +577,15 @@ EOF
   touch "${out_dir}/.done"; kill "$pp" 2>/dev/null; wait 2>/dev/null
   printf "\n"
 
-  # post-batch balance read → annotate all PASS_NOTHRU/UNLIMITED rows
-  if [ "$INTERACTIVE" = "1" ]; then
-    bal_post=$(read_balance_kb "POST")
-    if [ "$bal_pre" -ge 0 ] && [ "$bal_post" -ge 0 ]; then
-      local delta=$((bal_pre - bal_post))
-      log "Balance delta: ${delta} KB across batch"
-      if [ "$delta" -gt 0 ]; then
-        # re-classify rows: any row whose tier was UNLIMITED_FREE / APP_TUNNEL / PASS_NOTHRU
-        # gets bumped to BUNDLE_REQUIRED, since we cannot attribute the charge per-host.
-        awk -F'|' -v OFS='|' -v d="$delta" '
-          {
-            if ($1=="UNLIMITED_FREE" || $1=="PASS_NOTHRU" || $1 ~ /^APP_TUNNEL_/) {
-              $1="BUNDLE_REQUIRED"; $6=d
-            }
-            print
-          }' "$pass_file" > "${pass_file}.t" && mv "${pass_file}.t" "$pass_file"
-      fi
-    fi
-  fi
-
   format_outputs "$out_dir" "$pass_file"
+
+  # Task contract: also expose canonical paths at $HOME/sni-hunter-results.{json,txt}
+  cp -f "${out_dir}/results.json" "${HOME}/sni-hunter-results.json" 2>/dev/null || true
+  cp -f "${out_dir}/results.txt"  "${HOME}/sni-hunter-results.txt"  2>/dev/null || true
+
   log "Done in $(( $(date +%s) - started ))s. ${C_G}$(wc -l < "$pass_file") passing${C_X} of ${total}."
-  log "Reports: ${out_dir}/results.txt   ${out_dir}/results.json   ${out_dir}/results.csv"
+  log "Reports: ${out_dir}/results.txt   ${out_dir}/results.json"
+  log "         ${HOME}/sni-hunter-results.txt   ${HOME}/sni-hunter-results.json"
   rm -f "${out_dir}/.done" "${cand_file}.todo"
 }
 
