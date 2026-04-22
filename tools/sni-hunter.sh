@@ -443,12 +443,34 @@ probe() {
     fi
   fi
 
+  # ---- stage 5b: per-host tunnel byte-flow verify (only when --verify-tunnel
+  # is set). We use the SSH-WS endpoint because it's the cheapest unambiguous
+  # bidi proof and works without any UUID. tunnel_ok ∈ {1,0,-1=skipped}.
+  local tunnel_ok=-1 tunnel_bytes=-1
+  if [ "${VERIFY_TUNNEL:-0}" = "1" ] && command -v python3 >/dev/null 2>&1; then
+    local tres
+    tres=$(tunnel_test_one ssh "$route_ip" "$sni" 2>/dev/null)
+    case "$tres" in
+      *'"status": "PASS"'*|*'"status":"PASS"'*)
+        tunnel_ok=1
+        tunnel_bytes=$(echo "$tres" | python3 -c 'import sys,json
+try: print(json.loads(sys.stdin.read()).get("bytes_in",0))
+except Exception: print(0)' 2>/dev/null)
+        ;;
+      *'"status": "SKIP"'*|*'"status":"SKIP"'*) tunnel_ok=-1 ;;
+      *) tunnel_ok=0 ;;
+    esac
+  fi
+
   # ---- stage 6: classification ----
   local tier
   tier=$(classify_tier "$mbps" "$bal_delta" "$iplock" "$ntype" "$family")
 
-  printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|101\n" \
-    "$tier" "$sni" "$rtt" "$jitter" "$mbps" "$bal_delta" "$iplock" "$ntype" "$family"
+  # CSV schema: 1=tier 2=sni 3=rtt 4=jit 5=mbps 6=bal 7=iplock 8=ntype 9=family
+  # 10=ws_code 11=tunnel_ok 12=tunnel_bytes  (10..12 always present)
+  printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|101|%s|%s\n" \
+    "$tier" "$sni" "$rtt" "$jitter" "$mbps" "$bal_delta" "$iplock" "$ntype" \
+    "$family" "$tunnel_ok" "$tunnel_bytes"
 }
 
 # Strict tier classifier — priority order is fixed.
@@ -563,8 +585,8 @@ PY
     printf "  ${C_R}FAIL${C_X}  SSH banner regex broken\n"; fails=$((fails+1))
   fi
 
-  # Regression guard: hunt --verify-tunnel must invoke cmd_tunnel_test (this
-  # was a no-op in an earlier draft). Extract cmd_hunt body and count calls.
+  # Regression guard #1: hunt --verify-tunnel must invoke cmd_tunnel_test
+  # (preflight + post-scan). Was a no-op in an earlier draft.
   local hunt_calls
   hunt_calls=$(awk '
     /^cmd_hunt\(\) \{/  {inhunt=1; next}
@@ -572,10 +594,59 @@ PY
     inhunt
   ' "$0" | grep -c 'cmd_tunnel_test' || true)
   if [ "${hunt_calls:-0}" -ge 2 ]; then
-    printf "  ${C_G}ok${C_X}    hunt invokes tunnel verification (pre + post)\n"
+    printf "  ${C_G}ok${C_X}    hunt body calls cmd_tunnel_test ${hunt_calls}× (pre + post)\n"
   else
-    printf "  ${C_R}FAIL${C_X}  hunt --verify-tunnel doesn't call cmd_tunnel_test (found %s sites; need 2)\n" "${hunt_calls:-0}"
+    printf "  ${C_R}FAIL${C_X}  hunt --verify-tunnel doesn't call cmd_tunnel_test (found %s; need 2)\n" "${hunt_calls:-0}"
     fails=$((fails+1))
+  fi
+
+  # Regression guard #2: probe() must include tunnel_ok / tunnel_bytes columns.
+  # Extract probe() body via awk (until next top-level function), then grep.
+  if awk '/^probe\(\) \{/{p=1; next} p && /^[a-z_]+\(\) \{/{p=0} p' "$0" \
+       | grep -q 'tunnel_ok'; then
+    printf "  ${C_G}ok${C_X}    probe() emits tunnel_ok / tunnel_bytes fields\n"
+  else
+    printf "  ${C_R}FAIL${C_X}  probe() missing tunnel_ok\n"; fails=$((fails+1))
+  fi
+
+  # VLESS request header size for our defaults: 1+16+1+1+2+1+1+|domain|.
+  # default target_domain is "www.cloudflare.com" (18 chars) → 18 + 5 + 18 = ?
+  # 1 ver + 16 uuid + 1 addons + 1 cmd + 2 port + 1 atype + 1 dlen + 18 dom = 41
+  if command -v python3 >/dev/null 2>&1; then
+    local vlen
+    vlen=$(python3 - <<'PY'
+import struct
+dom = b"www.cloudflare.com"
+hdr = b"\x00" + b"\x00"*16 + b"\x00" + b"\x01" + struct.pack("!H",443) + b"\x02" + bytes([len(dom)]) + dom
+print(len(hdr))
+PY
+)
+    if [ "$vlen" = "41" ]; then
+      printf "  ${C_G}ok${C_X}    VLESS header size for cloudflare default = 41B\n"
+    else
+      printf "  ${C_R}FAIL${C_X}  VLESS header size = %s (expected 41)\n" "$vlen"; fails=$((fails+1))
+    fi
+
+    # VMess auth_id is exactly 16 bytes (md5 digest), and full sent prefix
+    # (auth_id + 2B len + 16B nonce + 16B padding) is exactly 50 bytes.
+    local vmlen authlen
+    vmlen=$(python3 -c 'import hashlib,struct; auth=hashlib.md5(b"\x00"*16+b"c48619fe-8f02-49e0-b9e9-edf763e17e21").digest(); pl=auth+struct.pack("!H",16)+b"\x00"*16+b"\x00"*16; print(len(pl))')
+    authlen=$(python3 -c 'import hashlib; print(len(hashlib.md5(b"x").digest()))')
+    if [ "$vmlen" = "50" ] && [ "$authlen" = "16" ]; then
+      printf "  ${C_G}ok${C_X}    VMess auth_id=16B  prefix=50B\n"
+    else
+      printf "  ${C_R}FAIL${C_X}  VMess sizes drift: auth=%s prefix=%s (want 16/50)\n" "$authlen" "$vmlen"
+      fails=$((fails+1))
+    fi
+
+    # Confirm the embedded python contains the expected magic-string for VMess
+    # so future edits can't silently break the auth_id derivation.
+    if _tunnel_py | grep -q 'c48619fe-8f02-49e0-b9e9-edf763e17e21'; then
+      printf "  ${C_G}ok${C_X}    VMess legacy auth magic string present\n"
+    else
+      printf "  ${C_R}FAIL${C_X}  VMess auth magic string missing from _tunnel_py\n"
+      fails=$((fails+1))
+    fi
   fi
 
   # path constants exist
@@ -697,8 +768,10 @@ EOF
 
   export DOMAIN PORT WS_PATH BLOB_PATH TIMEOUT THRU_TIMEOUT TARGET_IP CARRIER
   export RADIO_TAG LATENCY_SAMPLES SKIP_THRU HAVE_TERMUX_API INTERACTIVE
+  export VERIFY_TUNNEL VMESS_PATH VLESS_PATH UUID_VMESS UUID_VLESS
   export -f probe ws_probe_via_ip classify_family classify_tier
   export -f network_type_now read_balance_kb ussd_code_for
+  export -f tunnel_test_one _tunnel_py
 
   local started; started=$(date +%s); local n=0
   ( while [ ! -f "${out_dir}/.done" ]; do
@@ -815,8 +888,15 @@ format_outputs() {
     {
       if (!first) printf ",\n"; first=0
       gsub(/"/,"\\\"",$2)
-      printf "  {\"tier\":\"%s\",\"sni\":\"%s\",\"rtt_ms\":%s,\"jitter_ms\":%s,\"mbps\":%s,\"bal_delta_kb\":%s,\"ip_lock\":%s,\"net_type\":\"%s\",\"family\":\"%s\"}",
-        $1,$2,$3,$4,$5,$6,($7=="1"?"true":"false"),$8,$9
+      # tunnel_ok: -1=skipped (verify-tunnel off or python missing), 0=fail, 1=pass
+      tok=$11; if (tok=="") tok="-1"
+      tbytes=$12; if (tbytes=="") tbytes="-1"
+      tunnel_field = ""
+      if (tok=="1")      tunnel_field = sprintf(",\"tunnel_ok\":true,\"tunnel_bytes\":%s",  tbytes)
+      else if (tok=="0") tunnel_field = sprintf(",\"tunnel_ok\":false,\"tunnel_bytes\":%s", tbytes)
+      else               tunnel_field = ",\"tunnel_ok\":null"
+      printf "  {\"schema_version\":2,\"tier\":\"%s\",\"sni\":\"%s\",\"rtt_ms\":%s,\"jitter_ms\":%s,\"mbps\":%s,\"bal_delta_kb\":%s,\"ip_lock\":%s,\"net_type\":\"%s\",\"family\":\"%s\"%s}",
+        $1,$2,$3,$4,$5,$6,($7=="1"?"true":"false"),$8,$9,tunnel_field
     }
     END{print "\n]"}' "$sort_csv" > "$json"
 
@@ -843,16 +923,25 @@ format_outputs() {
 # =============================================================================
 _tunnel_py() {
 cat <<'PYEOF'
-import sys, socket, ssl, base64, os, struct, time, json
+import sys, socket, ssl, base64, os, struct, time, json, hashlib, uuid as _uuid
 host, port, sni, host_hdr, path, mode = sys.argv[1:7]
 port = int(port)
 deadline = float(os.environ.get("TUN_DEADLINE", "8"))
-uuid_hex = (os.environ.get("UUID_VMESS","") if mode=="vmess"
+uuid_str = (os.environ.get("UUID_VMESS","") if mode=="vmess"
             else os.environ.get("UUID_VLESS","") if mode=="vless" else "")
+target_domain = os.environ.get("TUN_TARGET_DOMAIN", "www.cloudflare.com")
+target_port = int(os.environ.get("TUN_TARGET_PORT", "443"))
 def out(status, **kw):
     kw["status"] = status; kw["mode"] = mode
     print(json.dumps(kw))
-    sys.exit(0 if status == "PASS" else 1)
+    sys.exit(0 if status == "PASS" else 1 if status == "FAIL" else 2)
+def parse_uuid(s):
+    if not s: return None
+    try:
+        return _uuid.UUID(s).bytes
+    except Exception:
+        return None
+uuid_bytes = parse_uuid(uuid_str)
 try:
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
@@ -918,61 +1007,118 @@ def make_ws_frame(payload, opcode=0x2):
         head += bytes([0x80 | 127]) + struct.pack("!Q", n)
     return head + mask + masked
 
-if mode == "ssh":
-    # ws-ssh-bridge proxies WS payload <-> local sshd. SSH server speaks first
-    # with a "SSH-2.0-..." banner. Read up to 5s and search frames for it.
-    rx = body
-    end = time.time() + 5
-    found = None
-    while time.time() < end and not found:
+def read_ws_payload(rx_initial, deadline_sec):
+    """Read until at least one full server WS frame arrives or timeout."""
+    rx = rx_initial
+    end = time.time() + deadline_sec
+    while time.time() < end:
+        pl, rest = parse_ws_frame(rx)
+        if pl is not None:
+            return pl, rest
         try:
             ss.settimeout(max(0.2, end - time.time()))
             chunk = ss.recv(4096)
             if not chunk: break
             rx += chunk
-            # parse all complete frames
-            while True:
-                pl, rest = parse_ws_frame(rx)
-                if pl is None: break
-                rx = rest
-                if b"SSH-" in pl:
-                    found = pl
-                    break
+        except socket.timeout:
+            break
         except Exception:
             break
-    if found:
-        out("PASS", bytes_in=len(found), elapsed_ms=int((time.time()-t0)*1000),
-            banner=found.split(b"\r\n",1)[0][:64].decode(errors='replace'))
-    out("FAIL", error="no_ssh_banner", elapsed_ms=int((time.time()-t0)*1000))
+    return None, rx
 
-# vmess / vless: send a small client frame; accept either (a) a server frame in
-# response or (b) the connection being held open ≥1.5s after our write, since
-# real V2Ray closes immediately on bad auth/protocol.
-try:
-    ss.sendall(make_ws_frame(os.urandom(64)))
-except Exception as e:
-    out("FAIL", error=f"send: {e}")
-ss.settimeout(2.0)
-got = b""
-try:
-    chunk = ss.recv(4096)
-    if chunk: got += chunk
-except socket.timeout:
-    pass
-except Exception as e:
-    out("FAIL", error=f"recv: {e}", elapsed_ms=int((time.time()-t0)*1000))
-# write again to confirm peer hasn't RST
-try:
-    time.sleep(0.6)
-    ss.sendall(make_ws_frame(os.urandom(16)))
-    held = True
-except Exception:
-    held = False
-if got:
-    out("PASS", bytes_in=len(got), elapsed_ms=int((time.time()-t0)*1000), reason="server_responded")
-if held:
-    out("PASS", bytes_in=0, elapsed_ms=int((time.time()-t0)*1000), reason="held_open")
-out("FAIL", error="rst_after_write", elapsed_ms=int((time.time()-t0)*1000))
+if mode == "ssh":
+    # ws-ssh-bridge proxies WS <-> local sshd. SSH protocol mandates BOTH ends
+    # send a banner ("SSH-2.0-...\r\n") before key exchange. We send ours
+    # first, then read theirs. PASS only if BOTH directions moved bytes.
+    client_banner = b"SSH-2.0-snichecker_1.0\r\n"
+    bytes_out = 0
+    try:
+        ss.sendall(make_ws_frame(client_banner))
+        bytes_out = len(client_banner)
+    except Exception as e:
+        out("FAIL", error=f"send_banner: {e}")
+    pl, _ = read_ws_payload(body, 5.0)
+    if pl and b"SSH-" in pl:
+        banner = pl.split(b"\r\n",1)[0][:64].decode(errors='replace')
+        out("PASS", bytes_in=len(pl), bytes_out=bytes_out,
+            elapsed_ms=int((time.time()-t0)*1000), banner=banner)
+    if pl:
+        out("FAIL", error="non_ssh_response", bytes_in=len(pl),
+            elapsed_ms=int((time.time()-t0)*1000))
+    out("FAIL", error="no_ssh_banner", bytes_out=bytes_out,
+        elapsed_ms=int((time.time()-t0)*1000))
+
+if mode == "vless":
+    # No UUID → can't build a real handshake → declare SKIPPED, never PASS.
+    if not uuid_bytes:
+        out("SKIP", error="no_uuid", hint="pass --uuid-vless or set UUID_VLESS")
+    # Real VLESS request header (no addons, TCP, IP-host):
+    #   1B  version            = 0x00
+    #  16B  uuid
+    #   1B  addons_len         = 0x00
+    #   1B  command            = 0x01 (TCP)
+    #   2B  port (big-endian)
+    #   1B  addr_type          = 0x02 (domain)
+    #   1B  domain_len
+    #   NB  domain
+    dom = target_domain.encode()
+    if len(dom) > 255: dom = dom[:255]
+    hdr = (b"\x00" + uuid_bytes + b"\x00" + b"\x01"
+           + struct.pack("!H", target_port) + b"\x02"
+           + bytes([len(dom)]) + dom)
+    try:
+        ss.sendall(make_ws_frame(hdr))
+    except Exception as e:
+        out("FAIL", error=f"send_vless: {e}")
+    pl, _ = read_ws_payload(body, 4.0)
+    if pl is not None and len(pl) > 0:
+        # VLESS server reply header is at least 2 bytes: response_version + addons_len
+        out("PASS", bytes_in=len(pl), bytes_out=len(hdr),
+            elapsed_ms=int((time.time()-t0)*1000), reason="vless_response")
+    out("FAIL", error="vless_no_response", bytes_out=len(hdr),
+        elapsed_ms=int((time.time()-t0)*1000))
+
+if mode == "vmess":
+    # No UUID → can't derive AEAD auth_id → declare SKIPPED.
+    if not uuid_bytes:
+        out("SKIP", error="no_uuid", hint="pass --uuid-vmess or set UUID_VMESS")
+    # Build a structurally correct VMess prefix derived from UUID. Full AEAD
+    # auth_id requires AES which isn't in stdlib, so we send a UUID-derived
+    # 16-byte tag (md5(uuid + magic)) followed by 18 random padding bytes
+    # (matches the wire shape of VMess request: 16B id + 2B len + nonce).
+    # Real V2Ray will reject auth, but it WILL read these bytes (vs a TCP RST
+    # for pure garbage) and typically respond with a close frame — proving
+    # protocol-shaped bytes flowed.
+    magic = b"c48619fe-8f02-49e0-b9e9-edf763e17e21"  # VMess legacy auth magic
+    auth_id = hashlib.md5(uuid_bytes + magic).digest()  # 16 bytes
+    enc_len = struct.pack("!H", 16)                     # 2 bytes
+    nonce = os.urandom(16)                              # 16 bytes
+    enc_hdr = os.urandom(16)                            # padding so server reads more
+    payload = auth_id + enc_len + nonce + enc_hdr       # = 50 bytes
+    assert len(payload) == 50, "vmess prefix size drift"
+    try:
+        ss.sendall(make_ws_frame(payload))
+    except Exception as e:
+        out("FAIL", error=f"send_vmess: {e}")
+    pl, _ = read_ws_payload(body, 3.0)
+    if pl is not None and len(pl) > 0:
+        out("PASS", bytes_in=len(pl), bytes_out=len(payload),
+            elapsed_ms=int((time.time()-t0)*1000), reason="vmess_response")
+    # Probe again — server may have just closed; check we get an EOF rather
+    # than a TCP RST (real V2Ray performs orderly close after bad auth).
+    try:
+        ss.sendall(make_ws_frame(os.urandom(8)))
+        time.sleep(0.4)
+        # if we reach here without exception, server didn't immediately RST →
+        # WS frame was accepted. Still report FAIL since no response confirms
+        # protocol acceptance.
+        out("FAIL", error="vmess_no_response_held_open",
+            bytes_out=len(payload), elapsed_ms=int((time.time()-t0)*1000))
+    except Exception:
+        out("FAIL", error="vmess_rst", bytes_out=len(payload),
+            elapsed_ms=int((time.time()-t0)*1000))
+
+out("FAIL", error=f"unknown_mode: {mode}")
 PYEOF
 }
 
@@ -993,23 +1139,36 @@ tunnel_test_one() {
   echo "$result"
 }
 
-# Pretty-print a tunnel_test_one result line.
+# Pretty-print a tunnel_test_one result line. Returns 0 PASS, 1 FAIL, 2 SKIP.
 fmt_tunnel_line() {
   local mode="$1" json_line="$2"
-  local status bytes_in elapsed reason err
-  status=$(echo "$json_line" | python3 -c 'import sys,json; d=json.loads(sys.stdin.read()); print(d.get("status",""))' 2>/dev/null || echo "")
-  if [ "$status" = "PASS" ]; then
-    bytes_in=$(echo "$json_line" | python3 -c 'import sys,json; print(json.loads(sys.stdin.read()).get("bytes_in",0))' 2>/dev/null)
-    elapsed=$(echo "$json_line" | python3 -c 'import sys,json; print(json.loads(sys.stdin.read()).get("elapsed_ms",0))' 2>/dev/null)
-    reason=$(echo "$json_line" | python3 -c 'import sys,json; d=json.loads(sys.stdin.read()); print(d.get("reason") or d.get("banner",""))' 2>/dev/null)
-    printf "  ${C_G}PASS${C_X}  %-6s  bytes_in=%-5s  elapsed=%-5sms  %s\n" \
-      "$mode" "$bytes_in" "$elapsed" "$reason"
-    return 0
-  else
-    err=$(echo "$json_line" | python3 -c 'import sys,json; print(json.loads(sys.stdin.read()).get("error",""))' 2>/dev/null || echo "$json_line")
-    printf "  ${C_R}FAIL${C_X}  %-6s  %s\n" "$mode" "$err"
-    return 1
-  fi
+  local status
+  status=$(echo "$json_line" | python3 -c 'import sys,json
+try: print(json.loads(sys.stdin.read()).get("status",""))
+except Exception: print("")' 2>/dev/null || echo "")
+  case "$status" in
+    PASS)
+      local bytes_in elapsed reason
+      bytes_in=$(echo "$json_line" | python3 -c 'import sys,json; print(json.loads(sys.stdin.read()).get("bytes_in",0))')
+      elapsed=$(echo "$json_line" | python3 -c 'import sys,json; print(json.loads(sys.stdin.read()).get("elapsed_ms",0))')
+      reason=$(echo "$json_line" | python3 -c 'import sys,json; d=json.loads(sys.stdin.read()); print(d.get("reason") or d.get("banner",""))')
+      printf "  ${C_G}PASS${C_X}  %-6s  bytes_in=%-5s  elapsed=%-5sms  %s\n" \
+        "$mode" "$bytes_in" "$elapsed" "$reason"
+      return 0 ;;
+    SKIP)
+      local hint
+      hint=$(echo "$json_line" | python3 -c 'import sys,json; d=json.loads(sys.stdin.read()); print(d.get("hint") or d.get("error",""))')
+      printf "  ${C_Y}SKIP${C_X}  %-6s  %s\n" "$mode" "$hint"
+      return 2 ;;
+    *)
+      local err
+      err=$(echo "$json_line" | python3 -c 'import sys,json
+try: print(json.loads(sys.stdin.read()).get("error",""))
+except Exception as e: print("parse_error:"+str(e))')
+      [ -z "$err" ] && err="$json_line"
+      printf "  ${C_R}FAIL${C_X}  %-6s  %s\n" "$mode" "$err"
+      return 1 ;;
+  esac
 }
 
 # Standalone tunnel-test subcommand.
@@ -1042,11 +1201,19 @@ ${C_BOLD}${C_C}═════════════════════�
   Endpoints         : ${WS_PATH}  ${VMESS_PATH}  ${VLESS_PATH}
 ${C_BOLD}${C_C}═══════════════════════════════════════════════════════════════${C_X}
 EOF
-  local fails=0 line
+  local fails=0 skips=0 line rc
   for mode in ssh vmess vless; do
     line=$(tunnel_test_one "$mode" "$route_ip" "$sni")
-    fmt_tunnel_line "$mode" "$line" || fails=$((fails+1))
+    fmt_tunnel_line "$mode" "$line"; rc=$?
+    case "$rc" in
+      0) ;;                       # PASS
+      2) skips=$((skips+1)) ;;    # SKIP (no UUID) — neither pass nor fail
+      *) fails=$((fails+1)) ;;    # FAIL
+    esac
   done
+  if [ "$skips" -gt 0 ]; then
+    warn "${skips} endpoint(s) skipped — pass --uuid-vmess / --uuid-vless to test V2Ray"
+  fi
 
   # Bonus: pull the 25MB blob through the tunnel (fast bytes-flow proof)
   printf "  ${C_C}--${C_X}    blob   "
@@ -1110,18 +1277,75 @@ cmd_check() {
   local rec rc
   rec=$(probe "$sni") && rc=0 || rc=$?
 
+  # When probe ran, also collect cert subject and URL (used by both human and JSON paths)
+  local cert_subj="" route_ip="$TARGET_IP"
+  if [ -n "$rec" ]; then
+    IFS='|' read -r f_tier f_sni f_rtt f_jit f_mbps f_bal f_iplock f_net f_family _ f_tok f_tbytes <<<"$rec"
+    [ "$f_iplock" = "1" ] && route_ip=$(resolve_host "$f_sni" 2>/dev/null) || true
+    cert_subj=$(echo | timeout "$TIMEOUT" openssl s_client -connect "${TARGET_IP}:${PORT}" \
+                  -servername "$f_sni" 2>/dev/null </dev/null \
+                | openssl x509 -noout -subject 2>/dev/null | sed 's/^subject=//' | tr -d '"')
+  fi
+  local url_probed="https://${sni}:${PORT}${WS_PATH}"
+
+  # Build tunnel JSON block (only when --verify-tunnel is on)
+  local tunnel_json="null"
+  if [ "${VERIFY_TUNNEL:-0}" = "1" ] && [ -n "$rec" ]; then
+    local ssh_r vmess_r vless_r blob_bytes blob_spd blob_mbps
+    ssh_r=$(tunnel_test_one ssh   "$route_ip" "$f_sni" 2>/dev/null)
+    vmess_r=$(tunnel_test_one vmess "$route_ip" "$f_sni" 2>/dev/null)
+    vless_r=$(tunnel_test_one vless "$route_ip" "$f_sni" 2>/dev/null)
+    read -r blob_bytes blob_spd <<<"$(timeout "$THRU_TIMEOUT" curl -sk --http1.1 -o /dev/null \
+        -w "%{size_download} %{speed_download}" \
+        --resolve "${f_sni}:${PORT}:${route_ip}" -H "Host: ${DOMAIN}" \
+        "https://${f_sni}:${PORT}${BLOB_PATH}" 2>/dev/null || echo "0 0")"
+    blob_mbps=$(awk -v b="$blob_spd" 'BEGIN{printf "%.2f", (b*8)/1000000}')
+    tunnel_json=$(python3 - "$ssh_r" "$vmess_r" "$vless_r" "$blob_bytes" "$blob_mbps" <<'PY'
+import sys, json
+ssh, vm, vl, bb, bm = sys.argv[1:6]
+def parse(s):
+    try: return json.loads(s)
+    except Exception: return {"status":"FAIL","error":"unparseable","raw":s[:120]}
+out = {"ssh": parse(ssh), "vmess": parse(vm), "vless": parse(vl),
+       "blob": {"status":"PASS" if int(bb)>100000 else "FAIL",
+                "bytes_in": int(bb), "mbps": float(bm)}}
+print(json.dumps(out))
+PY
+)
+  fi
+
   if [ "$json_out" = "1" ]; then
     if [ -z "$rec" ]; then
-      printf '{"sni":"%s","passed":false,"reason":"probe failed (no TLS or no WS upgrade)"}\n' "$sni"
+      printf '{"schema_version":2,"sni":"%s","passed":false,"reason":"probe failed (no TLS or no WS upgrade)","tunnel":null,"recommended_action":"RETIRE"}\n' "$sni"
       exit 1
     fi
-    awk -F'|' -v sni="$sni" 'BEGIN{
-      printf "{"
-    } {
-      printf "\"passed\":true,\"tier\":\"%s\",\"sni\":\"%s\",\"rtt_ms\":%s,\"jitter_ms\":%s,\"mbps\":%s,\"bal_delta_kb\":%s,\"ip_lock\":%s,\"net_type\":\"%s\",\"family\":\"%s\"",
-        $1, $2, $3, $4, $5, $6, ($7=="1"?"true":"false"), $8, $9
-    } END {printf "}\n"}' <<<"$rec"
-    [ "${VERIFY_TUNNEL:-0}" = "1" ] && cmd_tunnel_test --sni "$sni" >/dev/null 2>&1
+    # recommended_action: USE if not throttled/bundle and (tunnel off or tunnel ok),
+    # WATCH if mid-tier, RETIRE if throttled/bundle/iplock-only-or-tunnel-failed.
+    local rec_action="USE"
+    case "$f_tier" in
+      THROTTLED|BUNDLE_REQUIRED|IP_LOCKED) rec_action="RETIRE" ;;
+      PASS_NOTHRU)                          rec_action="WATCH"  ;;
+    esac
+    if [ "${VERIFY_TUNNEL:-0}" = "1" ]; then
+      echo "$tunnel_json" | grep -q '"ssh"[^}]*"status": *"FAIL"' && rec_action="RETIRE"
+    fi
+    python3 - "$f_tier" "$f_sni" "$f_rtt" "$f_jit" "$f_mbps" "$f_bal" "$f_iplock" \
+              "$f_net" "$f_family" "$cert_subj" "$url_probed" "$rec_action" \
+              "$tunnel_json" <<'PY'
+import sys, json
+(tier, sni, rtt, jit, mbps, bal, iplock, net, family,
+ cert, url, action, tunnel) = sys.argv[1:14]
+obj = {
+  "schema_version": 2, "passed": True, "tier": tier, "sni": sni,
+  "rtt_ms": int(rtt), "jitter_ms": int(jit), "mbps": float(mbps),
+  "bal_delta_kb": int(bal), "ip_lock": iplock=="1",
+  "net_type": net, "family": family,
+  "cert_subject": cert or None, "url_probed": url,
+  "recommended_action": action,
+  "tunnel": (json.loads(tunnel) if tunnel != "null" else None),
+}
+print(json.dumps(obj))
+PY
     exit 0
   fi
 
@@ -1141,13 +1365,6 @@ EOF
     exit 1
   fi
 
-  IFS='|' read -r f_tier f_sni f_rtt f_jit f_mbps f_bal f_iplock f_net f_family _ <<<"$rec"
-  local cert_subj
-  cert_subj=$(echo | timeout "$TIMEOUT" openssl s_client -connect "${TARGET_IP}:${PORT}" \
-                -servername "$f_sni" 2>/dev/null </dev/null \
-              | openssl x509 -noout -subject 2>/dev/null | sed 's/^subject=//')
-  local route_ip="$TARGET_IP"; [ "$f_iplock" = "1" ] && route_ip=$(resolve_host "$f_sni")
-
   cat <<EOF
 
   ${C_BOLD}Result${C_X}
@@ -1159,7 +1376,7 @@ EOF
     Balance Δ    : ${f_bal} kB     $([ "$f_bal" = "-1" ] && echo "(USSD probe off)")
     IP-lock      : $([ "$f_iplock" = 1 ] && printf "${C_R}YES${C_X} — must route via brand IP $route_ip" || printf "no — direct via tunnel IP")
     Cert subject : ${cert_subj:-<unavailable>}
-    URL probed   : https://${f_sni}:${PORT}${WS_PATH}  (resolved → ${route_ip})
+    URL probed   : ${url_probed}  (resolved → ${route_ip})
 
 EOF
 
