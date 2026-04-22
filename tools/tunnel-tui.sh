@@ -248,15 +248,31 @@ action_restart() {
 
 # ---------------------------------------------------------- sni hunter ----
 action_sni_hunt() {
-  local script="/opt/sni-hunter-src/tools/sni-hunter.sh"
-  if [ ! -x "$script" ] && [ ! -f "$script" ]; then
-    whiptail --msgbox "SNI hunter script not found at $script.\nPull the repo or pass via SNI_HUNTER_SCRIPT env var." 9 60
+  local script="${SNI_HUNTER_SCRIPT:-/opt/sni-hunter-src/tools/sni-hunter.sh}"
+  if [ ! -f "$script" ]; then
+    whiptail --msgbox "SNI hunter script not found at:\n  $script\n\nPull the repo to /opt/sni-hunter-src or export SNI_HUNTER_SCRIPT." 11 70
     return
   fi
+  local sub
+  sub="$(whiptail --title "SNI hunter" --menu "Pick action:" 14 60 4 \
+          "hunt"        "Run a hunt (writes to /tmp/sni-hunter-tui)" \
+          "self-test"   "Run sni-hunter --self-test" \
+          "tunnel-test" "Test the tunnel surface" \
+          "help"        "Show sni-hunter --help" \
+          3>&1 1>&2 2>&3)" || return
   clear
-  echo "Running SNI hunter (this may take a few minutes)..."
-  echo "Output goes to /tmp/sni-hunter-tui.csv"
-  bash "$script" --output /tmp/sni-hunter-tui.csv 2>&1 | tail -n 200
+  local out_dir="/tmp/sni-hunter-tui"
+  mkdir -p "$out_dir"
+  case "$sub" in
+    hunt)
+      echo "Running: bash $script hunt --out $out_dir"
+      echo "(this can take several minutes; Ctrl-C to abort)"
+      echo
+      bash "$script" hunt --out "$out_dir" 2>&1 | tail -n 400 ;;
+    self-test)   bash "$script" self-test 2>&1 | tail -n 200 ;;
+    tunnel-test) bash "$script" tunnel-test 2>&1 | tail -n 200 ;;
+    help)        bash "$script" --help 2>&1 | tail -n 200 ;;
+  esac
   echo
   read -rp "Press Enter to return to menu..." _
 }
