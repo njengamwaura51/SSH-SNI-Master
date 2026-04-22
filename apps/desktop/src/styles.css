@@ -1,0 +1,104 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Material 3 dark theme tokens — matches the palette in task-19. */
+:root,
+.dark {
+  --md-surface: #121212;
+  --md-surface-2: #1c1c1f;
+  --md-surface-3: #232327;
+  --md-surface-4: #2a2a2f;
+  --md-outline: #3a3a40;
+  --md-outline-variant: #2c2c30;
+  --md-on-surface: #e6e1e5;
+  --md-on-surface-variant: #c9c5d0;
+  --md-primary: #bb86fc;
+  --md-on-primary: #1a103a;
+  --md-secondary: #03dac6;
+  --md-tertiary: #ff7597;
+  --md-success: #4caf50;
+  --md-warning: #ffb74d;
+  --md-error: #cf6679;
+  --md-promo: #ffb74d;
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--md-surface);
+  color: var(--md-on-surface);
+  font-feature-settings: "cv11", "ss01", "ss03";
+}
+
+/* Smooth focus + scroll */
+*:focus-visible {
+  outline: 2px solid var(--md-primary);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #2f2f34;
+  border-radius: 8px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3a3a40;
+}
+
+/* Subtle global motion */
+* {
+  transition-property: background-color, border-color, color, fill, stroke,
+    opacity, box-shadow;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+  transition-duration: 140ms;
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium
+           border border-outline bg-surface-2 text-on-surface
+           hover:bg-surface-3 active:bg-surface-4
+           disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-primary {
+    @apply btn bg-primary text-on-primary border-transparent
+           hover:brightness-110 active:brightness-95;
+  }
+  .btn-danger {
+    @apply btn text-on-surface border-error/40 bg-error/10
+           hover:bg-error/20 active:bg-error/30;
+  }
+  .btn-ghost {
+    @apply btn border-transparent bg-transparent
+           hover:bg-surface-3 active:bg-surface-4;
+  }
+  .input {
+    @apply w-full rounded-lg border border-outline bg-surface-2 px-3 py-2 text-sm
+           text-on-surface placeholder:text-on-surface-variant/60
+           focus:border-primary focus:outline-none;
+  }
+  .label {
+    @apply text-xs font-medium uppercase tracking-wide text-on-surface-variant;
+  }
+  .card {
+    @apply rounded-xl border border-outline-variant bg-surface-2 shadow-elev1;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium
+           border border-outline-variant bg-surface-3 text-on-surface-variant;
+  }
+}

@@ -1,0 +1,150 @@
+import { useEffect } from "react";
+import { Toolbar } from "./components/Toolbar";
+import { ScanControls } from "./components/ScanControls";
+import { ResultsTable } from "./components/ResultsTable";
+import { DetailDrawer } from "./components/DetailDrawer";
+import { StatusBar } from "./components/StatusBar";
+import { LogViewer } from "./components/LogViewer";
+import { SettingsDialog } from "./components/SettingsDialog";
+import { TunnelTestPanel } from "./components/TunnelTestPanel";
+import { useStore, defaultScanOptions } from "./store";
+import {
+  loadConfig,
+  parseHostLine,
+  subscribeScanEvents,
+} from "./lib/hunter";
+
+export default function App() {
+  const {
+    setConfig,
+    showLogs,
+    showSettings,
+    showTunnelTest,
+    setShowSettings,
+    setShowTunnelTest,
+    setScanOptions,
+    startedScan,
+    endedScan,
+    pushHost,
+    pushLog,
+  } = useStore();
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      try {
+        const cfg = await loadConfig();
+        setConfig(cfg);
+        // Hydrate scan options from config defaults
+        setScanOptions({
+          ...defaultScanOptions,
+          carrier: cfg.defaultCarrier || "auto",
+          concurrency: cfg.defaultConcurrency || 30,
+          corpusPath: cfg.defaultCorpusPath || undefined,
+          outDir: cfg.defaultOutDir || undefined,
+          verifyTunnel: cfg.verifyTunnel,
+          twoPass: cfg.twoPass,
+          noThroughput: cfg.noThroughput,
+          promptCharge: cfg.promptCharge,
+          autoRenewPromo: cfg.autoRenewPromo,
+          accessibilityFile: cfg.accessibilityFile || undefined,
+          uuidVmess: cfg.uuidVmess || undefined,
+          uuidVless: cfg.uuidVless || undefined,
+          tunnelDomain: cfg.tunnelDomain || undefined,
+          tunnelPort: cfg.tunnelPort || undefined,
+          // Path overrides: empty string in config means "use the
+          // hunter's compiled-in default", so don't propagate it.
+          wsPath: cfg.wsPath || undefined,
+          vmessPath: cfg.vmessPath || undefined,
+          vlessPath: cfg.vlessPath || undefined,
+          hunterScriptOverride: cfg.hunterScriptOverride || undefined,
+        });
+      } catch (e) {
+        pushLog({
+          ts: Date.now(),
+          stream: "stderr",
+          line: `failed to load config: ${String(e)}`,
+        });
+      }
+
+      try {
+        unlisten = await subscribeScanEvents((e) => {
+          switch (e.type) {
+            case "started":
+              startedScan(e.scan_id, e.out_dir);
+              pushLog({
+                ts: Date.now(),
+                stream: "info",
+                line: `scan ${e.scan_id} → ${e.out_dir}`,
+              });
+              break;
+            case "host": {
+              const rec = parseHostLine(e.line);
+              if (rec) pushHost(rec);
+              else
+                pushLog({
+                  ts: Date.now(),
+                  stream: "stdout",
+                  line: e.line,
+                });
+              break;
+            }
+            case "log":
+              pushLog({ ts: Date.now(), stream: e.stream, line: e.line });
+              break;
+            case "done":
+              endedScan(e.code);
+              pushLog({
+                ts: Date.now(),
+                stream: "info",
+                line: `scan finished (exit ${e.code})`,
+              });
+              break;
+            case "error":
+              pushLog({
+                ts: Date.now(),
+                stream: "stderr",
+                line: `error: ${e.message}`,
+              });
+              break;
+          }
+        });
+      } catch (e) {
+        pushLog({
+          ts: Date.now(),
+          stream: "stderr",
+          line: `event subscribe failed: ${String(e)}`,
+        });
+      }
+    })();
+    return () => {
+      if (unlisten) unlisten();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <div className="flex h-screen flex-col bg-surface text-on-surface">
+      <Toolbar />
+      <div className="flex flex-1 min-h-0 overflow-hidden">
+        <aside className="w-[320px] shrink-0 border-r border-outline-variant bg-surface-2 overflow-y-auto">
+          <ScanControls />
+        </aside>
+        <main className="flex-1 min-w-0 flex flex-col overflow-hidden">
+          <ResultsTable />
+          {showLogs && <LogViewer />}
+        </main>
+        <aside className="w-[380px] shrink-0 border-l border-outline-variant bg-surface-2 overflow-y-auto">
+          <DetailDrawer />
+        </aside>
+      </div>
+      <StatusBar />
+      {showSettings && (
+        <SettingsDialog onClose={() => setShowSettings(false)} />
+      )}
+      {showTunnelTest && (
+        <TunnelTestPanel onClose={() => setShowTunnelTest(false)} />
+      )}
+    </div>
+  );
+}

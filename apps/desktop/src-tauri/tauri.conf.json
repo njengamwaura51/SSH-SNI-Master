@@ -1,0 +1,72 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "SNI Hunter",
+  "version": "0.1.0",
+  "identifier": "page.shopthelook.snihunter.desktop",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build",
+    "devUrl": "http://localhost:5180",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "SNI Hunter",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 1024,
+        "minHeight": 640,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": true,
+        "transparent": false,
+        "theme": "Dark",
+        "backgroundColor": "#0E0F12"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data: asset: https://asset.localhost; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "category": "DeveloperTool",
+    "copyright": "shopthelook.page",
+    "shortDescription": "SNI / bug-host hunter for Kenyan ISPs",
+    "longDescription": "Dark-mode desktop GUI that wraps the SNI hunter bash tool. Scans candidate SNI hosts through your tunnel server, classifies them by tier (UNLIMITED_FREE, PROMO_BUNDLE_*, THROTTLED, etc.), verifies tunnel byte-flow over SSH-WS / VMess-WS / VLESS-WS, and exports results.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": [],
+    "externalBin": ["bin/sni-hunter"],
+    "linux": {
+      "deb": {
+        "depends": [
+          "bash (>= 5.0)",
+          "openssl",
+          "curl",
+          "ca-certificates",
+          "dnsutils",
+          "python3 (>= 3.8)",
+          "coreutils"
+        ],
+        "section": "net",
+        "priority": "optional"
+      },
+      "appimage": {
+        "bundleMediaFramework": false,
+        "files": {}
+      }
+    }
+  },
+  "plugins": {
+    "shell": {
+      "open": true
+    }
+  }
+}
