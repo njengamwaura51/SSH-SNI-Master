@@ -1290,7 +1290,10 @@ cmd_check() {
 
   # Build tunnel JSON block (only when --verify-tunnel is on)
   local tunnel_json="null"
-  if [ "${VERIFY_TUNNEL:-0}" = "1" ] && [ -n "$rec" ]; then
+  if [ "${VERIFY_TUNNEL:-0}" = "1" ] && [ -n "$rec" ] && ! command -v python3 >/dev/null 2>&1; then
+    tunnel_json='{"error":"python3_unavailable","hint":"install python3 to enable byte-flow verification"}'
+    warn "--verify-tunnel requested but python3 not installed; tunnel block will report unavailable"
+  elif [ "${VERIFY_TUNNEL:-0}" = "1" ] && [ -n "$rec" ]; then
     local ssh_r vmess_r vless_r blob_bytes blob_spd blob_mbps
     ssh_r=$(tunnel_test_one ssh   "$route_ip" "$f_sni" 2>/dev/null)
     vmess_r=$(tunnel_test_one vmess "$route_ip" "$f_sni" 2>/dev/null)
