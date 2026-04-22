@@ -1,0 +1,51 @@
+root@ubuntu-s-2vcpu-2gb-90gb-intel-ams3:~# sudo bash /opt/sni-hunter-src/tools/sni-hunter.sh refresh-corpus    # one-time
+sudo bash /opt/sni-hunter-src/tools/sni-hunter.sh hunt \
+  --carrier safaricom --out /var/lib/sni-hunter/runs/$(date +%F) \
+  --concurrency 30 --verify-tunnel
+[23:06:10] Fetching Tranco top-1M...
+[23:06:10]   Tranco: 18000 hosts
+[23:06:10] Fetching Cisco Umbrella top-1M...
+[23:06:13] Corpus: 48 hosts (48 seeds + external) → /var/lib/sni-hunter/corpus.txt
+[23:06:13] --verify-tunnel: preflight against 164.90.204.229
+═══════════════════════════════════════════════════════════════
+  TUNNEL TEST
+  Domain (Host hdr) : shopthelook.page
+  SNI presented     : shopthelook.page
+  Route IP          : 164.90.204.229:443
+  Endpoints         : /ws-bridge-x9k2  /vmess-x9k2  /vless-x9k2
+═══════════════════════════════════════════════════════════════
+  PASS  ssh     bytes_in=43     elapsed=11   ms  SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.15
+  SKIP  vmess   pass --uuid-vmess or set UUID_VMESS
+  SKIP  vless   pass --uuid-vless or set UUID_VLESS
+[warn] 2 endpoint(s) skipped — pass --uuid-vmess / --uuid-vless to test V2Ray
+  --    blob   FAIL  bytes=2388  (no payload reached client)
+
+TUNNEL DEGRADED — 1 endpoint(s) failed
+[FATAL] tunnel preflight failed — fix the server before scanning. Re-run without --verify-tunnel to scan anyway.
+root@ubuntu-s-2vcpu-2gb-90gb-intel-ams3:~# sudo bash /opt/sni-hunter-src/tools/sni-hunter.sh hunt \
+  --carrier safaricom --seed-only --out /tmp/sni-seed
+═══════════════════════════════════════════════════════════════
+  SNI HUNTER v2
+  Domain         : shopthelook.page    Tunnel IP: 164.90.204.229
+  Carrier        : safaricom    Radio: unknown
+  Candidates     : 31  (seeds only)
+  Concurrency    : 30    Throughput: 25MB
+  Balance probe  : off (use --interactive / --accessibility / --prompt-charge)
+  Promo bundle   : *544*1# (configured but back-end can't poll it; tier disabled)
+  Output dir     : /tmp/sni-seed
+═══════════════════════════════════════════════════════════════
+xargs: warning: options --max-args and --replace/-I/-i are mutually exclusive, ignoring previous --max-args value
+  scanned    30/31      pass   0   elapsed 15s
+
+=== Top 30 ===
+  TIER                    SNI                                 RTT    JIT     MBPS  NET         FAMILY   
+
+=== Pass counts by tier ===
+
+=== Pass counts by radio type ===
+
+=== Tier × radio matrix ===
+[23:07:03] Done in 20s. 0 passing of 31.
+[23:07:03] Reports: /tmp/sni-seed/results.txt   /tmp/sni-seed/results.json
+[23:07:03]          /root/sni-hunter-results.txt   /root/sni-hunter-results.json
+root@ubuntu-s-2vcpu-2gb-90gb-intel-ams3:~# 
