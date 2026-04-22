@@ -113,8 +113,9 @@ detect_tunnel_stack() {
               -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
               -H 'Sec-WebSocket-Version: 13' \
               -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
-              "https://${DOMAIN}${path}" || echo 000)"
-    printf '  %-30s → %s\n' "${path}" "${code}"
+              "https://${DOMAIN}${path}" 2>/dev/null || true)"
+    [ -n "${code}" ] || code="ERR"
+    printf '  %-30s → HTTP %s\n' "${path}" "${code}"
   done
 
   hdr "Website reachability"
@@ -220,6 +221,22 @@ EOF
 
 # ------------------------------------ append nginx location block (idempotent)
 install_nginx_snippet() {
+  # Honour an explicit override first.
+  [ -z "${NGINX_SITE_OVERRIDE:-}" ] || NGINX_SITE="${NGINX_SITE_OVERRIDE}"
+  # The vhost file is rarely named exactly after the domain. Auto-detect by
+  # grepping for \`server_name <domain>\` across sites-enabled and conf.d.
+  if [ ! -f "${NGINX_SITE}" ]; then
+    local found
+    found="$(grep -rlE "server_name[[:space:]]+([^;]*[[:space:]])?${DOMAIN//./\\.}([[:space:]]|;)" /etc/nginx/sites-enabled /etc/nginx/conf.d 2>/dev/null | head -n1 || true)"
+    if [ -n "${found}" ]; then
+      log "Auto-detected nginx vhost for ${DOMAIN}: ${found}"
+      NGINX_SITE="${found}"
+    else
+      hdr "Available nginx vhosts"
+      ls -la /etc/nginx/sites-enabled/ /etc/nginx/conf.d/ 2>/dev/null | sed 's/^/  /'
+      die "could not find an nginx vhost containing 'server_name ${DOMAIN}'. Re-run with: NGINX_SITE_OVERRIDE=/etc/nginx/sites-enabled/<file> $0 install"
+    fi
+  fi
   [ -f "${NGINX_SITE}" ] || die "nginx site not found: ${NGINX_SITE}"
 
   log "Writing ${NGINX_SNIPPET}"
