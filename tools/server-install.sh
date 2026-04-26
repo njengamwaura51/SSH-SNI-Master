@@ -284,6 +284,36 @@ EOF
   systemctl reload nginx
 }
 
+# ----------------------------------------------- carrier bypass nginx snippet
+# Installs /etc/nginx/snippets/tunnel-bypass.conf which adds:
+#   - /cdn-cgi/trace decoy (looks like a real Cloudflare endpoint)
+#   - /cdn-cgi/ws and /pop  WS-upgrade aliases → ws-ssh-bridge:8888
+#   - /v2ray                WS-upgrade alias  → v2ray vmess:10000
+# Idempotent. Includes the snippet from the same vhost as sni-hunter.conf.
+install_bypass_snippet() {
+  local src dst
+  src="$(dirname "$0")/snippets/tunnel-bypass.conf"
+  dst="/etc/nginx/snippets/tunnel-bypass.conf"
+  [ -f "$src" ] || { log "skip: snippets/tunnel-bypass.conf not in repo"; return 0; }
+  log "Writing $dst"
+  install -m 0644 "$src" "$dst"
+  if grep -q 'snippets/tunnel-bypass.conf' "${NGINX_SITE}"; then
+    log "vhost already includes tunnel-bypass.conf"
+  else
+    log "Patching ${NGINX_SITE} to include tunnel-bypass.conf"
+    awk -v inc="    include snippets/tunnel-bypass.conf; # added by tunnel-bypass" '
+      BEGIN { added = 0 }
+      { print }
+      !added && /listen[[:space:]]+443/ { print inc; added = 1 }
+    ' "${NGINX_SITE}" > "${NGINX_SITE}.new"
+    mv "${NGINX_SITE}.new" "${NGINX_SITE}"
+  fi
+  log "nginx -t"
+  nginx -t
+  log "nginx -s reload"
+  systemctl reload nginx
+}
+
 # --------------------------------------------- TUI launcher install (whiptail)
 install_tui() {
   log "Installing TUI deps (whiptail, jq, qrencode)"
@@ -337,6 +367,7 @@ cmd_install() {
   install_bundle
   install_systemd
   install_nginx_snippet
+  install_bypass_snippet
   install_tui
 
   hdr "Smoke test"
