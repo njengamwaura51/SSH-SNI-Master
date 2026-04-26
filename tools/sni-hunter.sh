@@ -262,12 +262,14 @@ SAFARICOM_SEEDS=(
   www.safaricom.co.ke safaricom.co.ke mpesa.safaricom.co.ke
   bonga.safaricom.co.ke daraja.safaricom.co.ke maishaplus.safaricom.co.ke
   youtube.com m.youtube.com www.googleapis.com
+  live.betika.com mzstatic.com
 )
 AIRTEL_SEEDS=(
   airtel.com www.airtel.com airtel.co.ke www.airtel.co.ke
   airtelmoney.airtel.com selfcare.airtel.co.ke shop.airtel.com
   www.airtel.in www.africa.airtel.com instagram.com www.instagram.com
   m.facebook.com free.facebook.com 0.facebook.com whatsapp.com
+  viton.com mobile.facebook.com
 )
 TELKOM_SEEDS=(
   telkom.co.ke www.telkom.co.ke myaccount.telkom.co.ke

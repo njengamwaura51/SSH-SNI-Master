@@ -437,7 +437,8 @@ action_generate_card() {
     echo "  User : ${user}      Pass: ${pass:-<password>}"
     echo "---------------------------------------------------------------"
     echo "  PROFILE 5 — CARRIER BYPASS payloads (HTTP Custom · SSH tab)"
-    echo "  All three: ip:port = ${DOMAIN}:443, tick [Use Payload][SSL][DNS]"
+    echo "  All five: ip:port = ${DOMAIN}:443, tick [Use Payload][SSL][DNS]"
+    echo "  ★ = confirmed working by operator on the named carrier"
     echo "---------------------------------------------------------------"
     echo
     echo "  ── 5A · TELKOM Unliminet (SNI=myaccount.telkom.co.ke) ──"
@@ -455,6 +456,16 @@ action_generate_card() {
     echo "  Payload:"
     echo "  GET /cdn-cgi/trace HTTP/1.1[crlf]Host: mobile.facebook.com[crlf][crlf][split][crlf][crlf]GET /ws-bridge-x9k2 HTTP/1.1[crlf]Host: ${DOMAIN}[crlf]Connection: Upgrade[crlf]Upgrade: websocket[crlf]Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==[crlf]Sec-WebSocket-Version: 13[crlf][crlf]"
     echo
+    echo "  ── 5D · AIRTEL (SNI=viton.com) ★ confirmed: 80MB daily ──"
+    echo "  SNI / Inject Host: viton.com"
+    echo "  Payload:"
+    echo "  GET /cdn-cgi/trace HTTP/1.1[crlf]Host: viton.com[crlf][crlf][split][crlf][crlf]GET /pop HTTP/1.1[crlf]Host: ${DOMAIN}[crlf]Connection: Upgrade[crlf]Upgrade: websocket[crlf]Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==[crlf]Sec-WebSocket-Version: 13[crlf][crlf]"
+    echo
+    echo "  ── 5E · SAFARICOM (SNI=live.betika.com) ★ confirmed: 50MB daily ──"
+    echo "  SNI / Inject Host: live.betika.com"
+    echo "  Payload:"
+    echo "  GET /cdn-cgi/trace HTTP/1.1[crlf]Host: live.betika.com[crlf][crlf][split][crlf][crlf]GET /cdn-cgi/ws HTTP/1.1[crlf]Host: ${DOMAIN}[crlf]Connection: Upgrade[crlf]Upgrade: websocket[crlf]Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==[crlf]Sec-WebSocket-Version: 13[crlf][crlf]"
+    echo
     echo "==============================================================="
     echo "  How carrier bypasses work against THIS server:"
     echo "    1. Carrier sees TLS ClientHello with the spoofed SNI above"
@@ -465,7 +476,14 @@ action_generate_card() {
     echo "    4. After [split] the WS upgrade hits /cdn-cgi/ws or /pop"
     echo "       which proxy to ws-ssh-bridge → SSH on 127.0.0.1:22."
     echo
-    echo "  If a carrier blocks all three SNIs above, run on the server:"
+    echo "  Any-SNI mode: this server's nginx falls back to default_server"
+    echo "  for unknown SNIs and serves the shopthelook cert. Tunnel apps"
+    echo "  don't verify it — so you can put ANY hostname in 'SNI / Inject"
+    echo "  Host' and the connection still lands on us. The SNI is the"
+    echo "  ONLY field that needs to change per carrier; everything else"
+    echo "  (ip:port, payload paths, user, pass) stays identical."
+    echo
+    echo "  If a carrier blocks all five SNIs above, run on the server:"
     echo "    sudo tunnel-tui → 6 → seed-only"
     echo "  then swap the SNI/Inject Host with any line from passing.txt"
     echo "==============================================================="
@@ -477,6 +495,82 @@ action_generate_card() {
 }
 
 # ----------------------------------------------------------- releases -----
+action_quickfill() {
+  # One-screen, copy-ready field map for the HTTP Custom Android app.
+  # Pulls the first non-system SSH user as the example login; falls back
+  # to <user>/<pass> placeholders if no human users exist yet.
+  local user pass first_uid_human
+  first_uid_human="$(awk -F: '$3>=1000 && $3<65534 && $1!="nobody" {print $1; exit}' /etc/passwd 2>/dev/null)"
+  user="${first_uid_human:-<user>}"
+  pass="<password>"
+  local body
+  body="$(cat <<EOF
+=================================================================
+  HTTP CUSTOM (Android) — exact field map for THIS server
+=================================================================
+  Open the SSH tab, then fill in EVERY field below verbatim.
+  The only field that changes per carrier is "SNI / Inject Host".
+
+  ┌────────────────────────────────────────────────────────────┐
+  │  Settings tab → Connection                                 │
+  ├────────────────────────────────────────────────────────────┤
+  │  ip:port            │  ${DOMAIN}:443                       │
+  │  Use Payload        │  [✓] ON                              │
+  │  SSL                │  [✓] ON  (TLS handshake to us)       │
+  │  Enable DNS         │  [✓] ON  (uses 1.1.1.1 / 8.8.8.8)    │
+  │  Bypass             │  [ ] OFF                             │
+  └────────────────────────────────────────────────────────────┘
+
+  ┌────────────────────────────────────────────────────────────┐
+  │  Settings tab → SSH                                        │
+  ├────────────────────────────────────────────────────────────┤
+  │  Username           │  ${user}                             │
+  │  Password           │  ${pass}                             │
+  │  Local Port (SOCKS) │  1080                                │
+  └────────────────────────────────────────────────────────────┘
+
+  ┌────────────────────────────────────────────────────────────┐
+  │  Settings tab → Payload Generator                          │
+  ├────────────────────────────────────────────────────────────┤
+  │  SNI / Inject Host  │  ▶ ONE OF THESE (pick by carrier):   │
+  │                     │     viton.com           (Airtel)     │
+  │                     │     live.betika.com     (Safaricom)  │
+  │                     │     myaccount.telkom.co.ke (Telkom)  │
+  │                     │     mzstatic.com        (Saf · alt)  │
+  │                     │     mobile.facebook.com (Airtel·alt) │
+  │                     │  ▶ or any host from passing.txt      │
+  │  Payload            │  copy the matching block from card 8 │
+  └────────────────────────────────────────────────────────────┘
+
+-----------------------------------------------------------------
+  Recommended connection type:  SSH + SSL + Payload
+  Why: SSH gives you a SOCKS5 + DNS tunnel any app can use; SSL
+  hides the inner traffic from the carrier; Payload front-loads
+  a free-rated SNI so the carrier doesn't bill the bytes.
+
+  How the bytes flow:
+    Phone (HTTP Custom · 1080)
+       └─ TLS handshake with spoofed SNI
+            └─ ${DOMAIN}:443  (nginx default_server, any SNI)
+                 └─ /pop or /cdn-cgi/ws  (WS upgrade)
+                      └─ ws-ssh-bridge  (127.0.0.1:8888)
+                           └─ OpenSSH on 127.0.0.1:22
+                                └─ SOCKS5/DNS out to the internet
+
+  When the SNI stops working:
+    sudo tunnel-tui → 6  (Run SNI hunter scan)
+       Pick "seed-only" for a fast 30-host pass, or full corpus
+       for a deep scan. Results land in passing.txt — copy any
+       host into "SNI / Inject Host" and reconnect.
+
+  Get a per-user card with all 5 ready-to-paste payloads:
+    sudo tunnel-tui → 8  (Generate user + payload card)
+=================================================================
+EOF
+)"
+  show_text "HTTP Custom · quick-fill" "$body"
+}
+
 action_releases() {
   local body=""
   if [ -d "$RELEASES_DIR" ]; then
@@ -499,7 +593,7 @@ main() {
 
   while true; do
     local choice
-    choice="$(whiptail --title "$TITLE" --menu "" 22 72 13 \
+    choice="$(whiptail --title "$TITLE" --menu "" 24 72 14 \
             "1"  "Status & health" \
             "2"  "Connection info (vmess/vless/ssh-ws + QR)" \
             "3"  "SSH user management" \
@@ -510,6 +604,7 @@ main() {
             "8"  "Generate user + payload card (for customers)" \
             "9"  "Update from GitHub (git pull + redeploy)" \
             "10" "Run hardening pass (ufw + fail2ban + sysctl + sshd)" \
+            "11" "HTTP Custom quick-fill (Android · field map)" \
             "0"  "Exit" \
             3>&1 1>&2 2>&3)" || break
 
@@ -524,6 +619,7 @@ main() {
       8)  action_generate_card;;
       9)  action_update;;
       10) action_harden;;
+      11) action_quickfill;;
       0|"") break;;
     esac
   done
